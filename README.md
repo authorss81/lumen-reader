@@ -162,9 +162,34 @@ Produces `src-tauri/target/release/epub-reader.exe` and, with bundling
 enabled, NSIS and MSI installers under `src-tauri/target/release/bundle/`.
 
 The release profile uses `lto = true`, `codegen-units = 1`,
-`opt-level = 3` and `strip = true`. Expect a slow first link (~3–6 minutes) on a
-laptop-class CPU; subsequent builds are cached. CI does this for you via the
-**Build release** workflow — see `.github/workflows/release.yml`.
+`opt-level = 3` and `strip = true`. A cold build links for roughly 10–15
+minutes on a laptop-class CPU and needs several GB of free RAM while the LTO
+link runs.
+
+**Builds belong in CI.** `.github/workflows/release.yml` runs the typecheck,
+the Rust tests, and the bundle on `windows-latest` for free, and uploads the
+`.exe`, the NSIS installer and the MSI. Push to `main` or tag `v*` to trigger
+it, or use the **Build release** workflow in the Actions tab.
+
+### Disk space
+
+`src-tauri/target/` is the only thing that grows, and it is gitignored — no
+build output is ever pushed. A full local debug + release tree reaches about
+6.5 GB, essentially all of it throwaway intermediates:
+
+| Path | Typical size | Safe to delete? |
+| --- | --- | --- |
+| `src-tauri/target/debug` | ~4.2 GB | Yes. Only `cargo test` needs it, and CI runs the tests. |
+| `src-tauri/target/release/deps` | ~1.8 GB | Yes, but the next local build then takes a full cold rebuild. |
+| `src-tauri/target/release/build` | ~480 MB | Yes, same caveat. |
+| `src-tauri/target/release/epub-reader.exe` | 8 MB | No — this is the app. |
+| `src-tauri/target/release/bundle/` | 7 MB | No — the installers. |
+| `node_modules` | ~73 MB | Only if you are not developing. |
+
+Deleting the debug profile is the single biggest win and costs nothing:
+```powershell
+Remove-Item src-tauri\target\debug -Recurse -Force
+```
 
 ---
 
