@@ -122,13 +122,18 @@ export class Reader {
     return { width, height, gap: GAP };
   }
 
-  private relayout() {
+private relayout() {
     if (!this.book) return;
     const { width, height } = this.metrics();
     const style = this.content.style;
     style.top = `${this.settings.marginY}px`;
     style.left = `${this.settings.marginX}px`;
     style.height = `${height}px`;
+    // `column-width` is only a *suggestion*: with no explicit width the browser
+    // widens the single column to fill the container, which desynchronises the
+    // column pitch from our page step. Pinning the width makes the column
+    // exactly `width` and the pitch exactly `width + gap`.
+    style.width = `${width}px`;
     style.columnWidth = `${width}px`;
     style.columnGap = `${GAP}px`;
     this.measure();

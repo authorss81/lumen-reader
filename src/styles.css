@@ -100,6 +100,11 @@ html[data-theme="black"] {
 *::after {
   box-sizing: border-box;
 }
+/* Class rules like `.panel { display: flex }` outrank the UA `[hidden]` rule,
+   so the attribute has to be enforced explicitly. */
+[hidden] {
+  display: none !important;
+}
 html,
 body {
   height: 100%;

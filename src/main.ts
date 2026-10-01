@@ -53,6 +53,8 @@ const libraryEl = $<HTMLElement>("library");
 const readerEl = $<HTMLElement>("reader");
 const panelEl = $<HTMLElement>("panel");
 const scrimEl = $<HTMLElement>("scrim");
+const panelInput = $<HTMLInputElement>("panel-input");
+let panelFilter = "";
 
 /* ---------------------------------------------------------------- library */
 
@@ -95,7 +97,6 @@ async function openBook(book: BookMeta) {
 function setPanel(mode: PanelMode | null) {
   panelMode = mode;
   const tabs = $("panel-tabs");
-  const input = $<HTMLInputElement>("panel-input");
   const body = $("panel-body");
 
   if (!mode) {
@@ -103,7 +104,8 @@ function setPanel(mode: PanelMode | null) {
     scrimEl.hidden = true;
     body.replaceChildren();
     tabs.replaceChildren();
-    input.value = "";
+    panelInput.value = "";
+    panelFilter = "";
     for (const id of ["btn-toc", "btn-search", "btn-bookmarks", "btn-notes"]) {
       $(id).classList.remove("active");
     }
@@ -119,6 +121,12 @@ function setPanel(mode: PanelMode | null) {
     bookmarks: "Bookmarks",
     notes: "Notes",
   };
+  const placeholders: Record<PanelMode, string> = {
+    toc: "Filter contents",
+    search: "Search this book",
+    bookmarks: "Filter bookmarks",
+    notes: "Filter notes",
+  };
   tabs.replaceChildren();
   for (const m of modes) {
     const tab = el("button", "tab", labels[m]);
@@ -127,8 +135,11 @@ function setPanel(mode: PanelMode | null) {
     tab.addEventListener("click", () => setPanel(m));
     tabs.appendChild(tab);
   }
-  input.placeholder = mode === "search" ? "Search this book" : labels[mode];
-  input.value = mode === "search" ? input.value : "";
+  panelInput.placeholder = placeholders[mode];
+  if (mode !== "search") {
+    panelInput.value = "";
+    panelFilter = "";
+  }
 
   for (const [id, m] of [
     ["btn-toc", "toc"],
@@ -153,7 +164,7 @@ function setPanel(mode: PanelMode | null) {
       ),
     );
     renderSearchResults();
-    if (mode === "search") window.setTimeout(() => input.focus(), 30);
+    if (mode === "search") window.setTimeout(() => panelInput.focus(), 30);
   }
 }
 
@@ -165,20 +176,37 @@ function togglePanel(mode: PanelMode) {
   setPanel(panelMode === mode ? null : mode);
 }
 
+function matchesPanelFilter(...fields: (string | null | undefined)[]): boolean {
+  if (!panelFilter) return true;
+  const needle = panelFilter.toLowerCase();
+  return fields.some((field) => (field ?? "").toLowerCase().includes(needle));
+}
+
 function renderToc() {
   const body = $("panel-body");
   const nodes = flatToc(reader.getToc());
+  const currentHref = reader.currentHref ?? "";
+  // Prefer an exact document match so only one row lights up; a nested
+  // "#fragment" entry for the same document must not also highlight.
+  const activeHref =
+    nodes.find((n) => n.href === currentHref)?.href ??
+    nodes.find((n) => n.href.split("#")[0] === currentHref)?.href ??
+    "";
+
+  const visible = nodes.filter((n) => matchesPanelFilter(n.title));
   body.replaceChildren();
   if (!nodes.length) {
     body.appendChild(el("p", "panel-empty", "This book has no table of contents."));
     return;
   }
-  const currentHref = reader.currentHref ?? "";
-  const active = nodes.find((node) => node.href.split("#")[0] === currentHref);
-  for (const node of nodes) {
+  if (!visible.length) {
+    body.appendChild(el("p", "panel-empty", `No section matches “${panelFilter}”.`));
+    return;
+  }
+  for (const node of visible) {
     const btn = el("button", "toc-item");
     btn.type = "button";
-    if (active && node.href === active.href) btn.classList.add("active");
+    if (node.href === activeHref) btn.classList.add("active");
     btn.style.paddingLeft = `${10 + Math.min(node.depth, 5) * 13}px`;
     btn.appendChild(document.createTextNode(node.title || "Untitled"));
     btn.addEventListener("click", async () => {
@@ -240,12 +268,17 @@ async function runSearch(query: string) {
 async function renderBookmarks() {
   await reader.refreshBookmarks();
   const body = $("panel-body");
-  const list = reader.getBookmarks();
+  const all = reader.getBookmarks();
+  const list = all.filter((b) => matchesPanelFilter(b.label, b.href));
   body.replaceChildren();
-  if (!list.length) {
+  if (!all.length) {
     body.appendChild(
       el("p", "panel-empty", "No bookmarks yet. Press B to add one."),
     );
+    return;
+  }
+  if (!list.length) {
+    body.appendChild(el("p", "panel-empty", `No bookmark matches “${panelFilter}”.`));
     return;
   }
   for (const mark of list) {
@@ -283,12 +316,19 @@ async function renderBookmarks() {
 async function renderNotes() {
   await reader.refreshAnnotations();
   const body = $("panel-body");
-  const list = reader.getAnnotations();
+  const all = reader.getAnnotations();
+  const list = all.filter((a) =>
+    matchesPanelFilter(a.quote, a.note, a.color),
+  );
   body.replaceChildren();
-  if (!list.length) {
+  if (!all.length) {
     body.appendChild(
       el("p", "panel-empty", "Select text while reading to highlight it, then add a note."),
     );
+    return;
+  }
+  if (!list.length) {
+    body.appendChild(el("p", "panel-empty", `No note matches “${panelFilter}”.`));
     return;
   }
   for (const note of list) {
@@ -470,8 +510,15 @@ function bindChrome() {
   $("btn-settings").addEventListener("click", showSettings);
   $("panel-close").addEventListener("click", () => setPanel(null));
   scrimEl.addEventListener("click", () => setPanel(null));
-  $<HTMLInputElement>("panel-input").addEventListener("input", (event) => {
-    if (panelMode === "search") runSearch((event.target as HTMLInputElement).value);
+  panelInput.addEventListener("input", () => {
+    if (panelMode === "search") {
+      runSearch(panelInput.value);
+      return;
+    }
+    panelFilter = panelInput.value.trim();
+    if (panelMode === "toc") renderToc();
+    if (panelMode === "bookmarks") void renderBookmarks();
+    if (panelMode === "notes") void renderNotes();
   });
 }
 
