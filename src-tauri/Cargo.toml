@@ -28,6 +28,7 @@ encoding_rs = "0.8"
 percent-encoding = "2"
 url = "2"
 base64 = "0.23.1"
+tauri-plugin-single-instance = "2.0.0-rc.5"
 
 [profile.release]
 codegen-units = 1

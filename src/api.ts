@@ -142,6 +142,8 @@ export const api = {
   setSetting: (key: string, value: unknown) =>
     invoke<void>("set_setting", { key, value }),
   libraryPath: () => invoke<string>("library_path"),
+  /** Drains EPUB paths handed over by the shell (file association / relaunch). */
+  takePendingOpens: () => invoke<string[]>("take_pending_opens"),
 };
 
 export async function pickEpubs(): Promise<string[]> {

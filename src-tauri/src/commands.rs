@@ -17,6 +17,9 @@ pub struct AppState {
     /// request would dominate response time, and this keeps the hot path cheap.
     manifest_cache: Mutex<HashMap<String, (i64, Arc<Manifest>)>>,
     cache_order: Mutex<Vec<String>>,
+    /// EPUB paths handed over by the shell (file association, or a second
+    /// launch while we are already running). Drained by the webview.
+    pending_opens: Mutex<Vec<String>>,
 }
 
 impl AppState {
@@ -25,7 +28,23 @@ impl AppState {
             store: Mutex::new(store),
             manifest_cache: Mutex::new(HashMap::new()),
             cache_order: Mutex::new(Vec::new()),
+            pending_opens: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn queue_opens(&self, paths: Vec<String>) {
+        if let Ok(mut pending) = self.pending_opens.lock() {
+            for path in paths {
+                if !pending.contains(&path) {
+                    pending.push(path);
+                }
+            }
+        }
+    }
+
+    fn take_pending_opens(&self) -> CmdResult<Vec<String>> {
+        let mut pending = self.pending_opens.lock().map_err(err)?;
+        Ok(std::mem::take(&mut *pending))
     }
 
     fn touch_cache(&self, path: &str) {
@@ -443,4 +462,11 @@ pub fn library_path(app: tauri::AppHandle) -> CmdResult<String> {
         .join("library");
     std::fs::create_dir_all(&dir).map_err(err)?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// Returns and clears any EPUB paths the shell asked us to open. The webview
+/// calls this on boot and whenever the window regains focus.
+#[tauri::command]
+pub fn take_pending_opens(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    state.take_pending_opens()
 }

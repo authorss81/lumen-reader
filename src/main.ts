@@ -549,6 +549,41 @@ async function bindDragDrop() {
   }
 }
 
+/**
+ * Import and open any EPUB the shell asked for. This covers double-clicking a
+ * .epub (file association) and launching a second copy while we already run,
+ * in which case the Rust side queues the path and we drain it here.
+ */
+async function drainPendingOpens(): Promise<void> {
+  let paths: string[] = [];
+  try {
+    paths = await api.takePendingOpens();
+  } catch {
+    return;
+  }
+  const epubs = paths.filter((p) => p.toLowerCase().endsWith(".epub"));
+  if (!epubs.length) return;
+
+  let ids: string[] = [];
+  if (readerEl.hidden) {
+    await library.importPaths(epubs);
+    await refreshLibrary();
+    ids = books
+      .filter((b) => epubs.some((p) => b.path.toLowerCase() === p.toLowerCase()))
+      .map((b) => b.id);
+  } else {
+    // Already reading: add to the shelf but stay where we are.
+    await library.importPaths(epubs);
+    await refreshLibrary();
+    ids = books
+      .filter((b) => epubs.some((p) => b.path.toLowerCase() === p.toLowerCase()))
+      .map((b) => b.id);
+  }
+  const first = books.find((b) => ids.includes(b.id));
+  if (first) await openBook(first);
+  else if (epubs.length) toast(`Could not open ${epubs[0].split(/[\\/]/).pop()}`);
+}
+
 async function boot() {
   settings = await loadSettings();
   applyTheme(settings.theme);
@@ -611,6 +646,10 @@ async function boot() {
     idle();
   }
   void bindDragDrop();
+  void drainPendingOpens();
+  // A relaunch of the exe (for example double-clicking a second book) lands in
+  // the already-running instance; draining again picks it up.
+  window.addEventListener("focus", () => void drainPendingOpens());
 }
 
 void boot();
