@@ -1,0 +1,16 @@
+# Normalise line endings in the repository; check out per platform.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# Windows scripts and generated project files keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+package-lock.json -text
+src-tauri/Cargo.lock -text

@@ -1,0 +1,569 @@
+import { api, el, formatDate, type BookMeta } from "./api";
+import { closeOverlays, Library } from "./library";
+import { Reader, excerptHtml, flatToc, type PanelMode } from "./reader";
+import {
+  applyTheme,
+  loadSettings,
+  openSettingsSheet,
+  type AppSettings,
+} from "./settings";
+
+/* --------------------------------------------------------------- helpers */
+
+function $<T extends HTMLElement>(id: string): T {
+  const node = document.getElementById(id);
+  if (!node) throw new Error(`missing element #${id}`);
+  return node as T;
+}
+
+let toastTimer: number | undefined;
+function toast(message: string) {
+  const node = $("toast");
+  node.textContent = message;
+  node.hidden = false;
+  if (toastTimer) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    node.hidden = true;
+  }, 3400);
+}
+
+let loadingDepth = 0;
+function busy(text?: string) {
+  loadingDepth += 1;
+  const node = $("loading");
+  if (text) $("loading-text").textContent = text;
+  node.hidden = false;
+}
+function idle() {
+  loadingDepth = Math.max(0, loadingDepth - 1);
+  if (loadingDepth === 0) $("loading").hidden = true;
+}
+
+/* ------------------------------------------------------------------ state */
+
+let settings: AppSettings;
+let library: Library;
+let reader: Reader;
+let books: BookMeta[] = [];
+let panelMode: PanelMode | null = null;
+let searchTimer: number | undefined;
+let searchResults: Awaited<ReturnType<Reader["search"]>> = [];
+
+const libraryEl = $<HTMLElement>("library");
+const readerEl = $<HTMLElement>("reader");
+const panelEl = $<HTMLElement>("panel");
+const scrimEl = $<HTMLElement>("scrim");
+
+/* ---------------------------------------------------------------- library */
+
+async function refreshLibrary() {
+  books = await api.listBooks();
+  library.setBooks(books);
+}
+
+function showLibrary() {
+  closeOverlays();
+  closePanel();
+  reader.flushSave();
+  libraryEl.hidden = false;
+  readerEl.hidden = true;
+  $("topbar").hidden = true;
+  void refreshLibrary();
+}
+
+async function openBook(book: BookMeta) {
+  busy("Opening…");
+  try {
+    const detail = await api.openBook(book.id);
+    closePanel();
+    closeOverlays();
+    libraryEl.hidden = true;
+    readerEl.hidden = false;
+    $("topbar").hidden = false;
+    $("topbar-book").textContent = detail.title;
+    await reader.open(detail);
+    void refreshLibrary();
+  } catch (error) {
+    toast(String(error));
+  } finally {
+    idle();
+  }
+}
+
+/* ------------------------------------------------------------------ panel */
+
+function setPanel(mode: PanelMode | null) {
+  panelMode = mode;
+  const tabs = $("panel-tabs");
+  const input = $<HTMLInputElement>("panel-input");
+  const body = $("panel-body");
+
+  if (!mode) {
+    panelEl.hidden = true;
+    scrimEl.hidden = true;
+    body.replaceChildren();
+    tabs.replaceChildren();
+    input.value = "";
+    for (const id of ["btn-toc", "btn-search", "btn-bookmarks", "btn-notes"]) {
+      $(id).classList.remove("active");
+    }
+    return;
+  }
+
+  panelEl.hidden = false;
+  scrimEl.hidden = false;
+  const modes: PanelMode[] = ["toc", "search", "bookmarks", "notes"];
+  const labels: Record<PanelMode, string> = {
+    toc: "Contents",
+    search: "Search",
+    bookmarks: "Bookmarks",
+    notes: "Notes",
+  };
+  tabs.replaceChildren();
+  for (const m of modes) {
+    const tab = el("button", "tab", labels[m]);
+    tab.type = "button";
+    if (m === mode) tab.classList.add("active");
+    tab.addEventListener("click", () => setPanel(m));
+    tabs.appendChild(tab);
+  }
+  input.placeholder = mode === "search" ? "Search this book" : labels[mode];
+  input.value = mode === "search" ? input.value : "";
+
+  for (const [id, m] of [
+    ["btn-toc", "toc"],
+    ["btn-search", "search"],
+    ["btn-bookmarks", "bookmarks"],
+    ["btn-notes", "notes"],
+  ] as [string, PanelMode][]) {
+    $(id).classList.toggle("active", m === mode);
+  }
+
+  if (mode === "toc") renderToc();
+  if (mode === "bookmarks") void renderBookmarks();
+  if (mode === "notes") void renderNotes();
+  if (mode === "search") {
+    body.replaceChildren(
+      el(
+        "p",
+        "panel-empty",
+        searchResults.length
+          ? `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}`
+          : "Type to search the whole book.",
+      ),
+    );
+    renderSearchResults();
+    if (mode === "search") window.setTimeout(() => input.focus(), 30);
+  }
+}
+
+function closePanel() {
+  if (panelMode) setPanel(null);
+}
+
+function togglePanel(mode: PanelMode) {
+  setPanel(panelMode === mode ? null : mode);
+}
+
+function renderToc() {
+  const body = $("panel-body");
+  const nodes = flatToc(reader.getToc());
+  body.replaceChildren();
+  if (!nodes.length) {
+    body.appendChild(el("p", "panel-empty", "This book has no table of contents."));
+    return;
+  }
+  const currentHref = reader.currentHref ?? "";
+  const active = nodes.find((node) => node.href.split("#")[0] === currentHref);
+  for (const node of nodes) {
+    const btn = el("button", "toc-item");
+    btn.type = "button";
+    if (active && node.href === active.href) btn.classList.add("active");
+    btn.style.paddingLeft = `${10 + Math.min(node.depth, 5) * 13}px`;
+    btn.appendChild(document.createTextNode(node.title || "Untitled"));
+    btn.addEventListener("click", async () => {
+      await reader.goToHref(node.href);
+      closePanel();
+    });
+    body.appendChild(btn);
+  }
+}
+
+function renderSearchResults() {
+  const body = $("panel-body");
+  if (!searchResults.length) return;
+  body.replaceChildren();
+  for (const hit of searchResults) {
+    const btn = el("button", "result");
+    btn.type = "button";
+    const head = el("div", "result-head");
+    head.appendChild(el("span", undefined, hit.title || `Section ${hit.chapter_index + 1}`));
+    head.appendChild(el("span", undefined, `${Math.round(hit.chapter_index + 1)}`));
+    const excerpt = el("div", "result-excerpt");
+    excerpt.innerHTML = excerptHtml(hit.excerpt);
+    btn.append(head, excerpt);
+    btn.addEventListener("click", async () => {
+      await reader.goToHref(hit.href);
+      closePanel();
+    });
+    body.appendChild(btn);
+  }
+}
+
+async function runSearch(query: string) {
+  if (searchTimer) window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(async () => {
+    if (query.trim().length < 2) {
+      searchResults = [];
+      renderSearchResults();
+      return;
+    }
+    const count = $("panel-body").childElementCount;
+    if (count) $("panel-body").replaceChildren(el("p", "panel-empty", "Searching…"));
+    try {
+      searchResults = await reader.search(query.trim());
+    } catch (error) {
+      toast(String(error));
+      searchResults = [];
+    }
+    if (panelMode !== "search") return;
+    if (!searchResults.length) {
+      $("panel-body").replaceChildren(
+        el("p", "panel-empty", `No matches for “${query.trim()}”.`),
+      );
+      return;
+    }
+    renderSearchResults();
+  }, 220);
+}
+
+async function renderBookmarks() {
+  await reader.refreshBookmarks();
+  const body = $("panel-body");
+  const list = reader.getBookmarks();
+  body.replaceChildren();
+  if (!list.length) {
+    body.appendChild(
+      el("p", "panel-empty", "No bookmarks yet. Press B to add one."),
+    );
+    return;
+  }
+  for (const mark of list) {
+    const row = el("div", "list-row");
+    const main = el("div", "list-row-main");
+    main.appendChild(el("div", "list-row-title", mark.label || mark.href));
+    main.appendChild(
+      el("div", "list-row-sub", `${formatDate(mark.created_at)} · ${mark.href.split("/").pop() ?? ""}`),
+    );
+    const actions = el("div", "list-row-actions");
+    const jump = el("button", "icon-btn");
+    jump.title = "Go to bookmark";
+    jump.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+    jump.addEventListener("click", async () => {
+      await reader.goToHref(mark.href);
+      closePanel();
+    });
+    const remove = el("button", "icon-btn");
+    remove.title = "Delete";
+    remove.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>';
+    remove.addEventListener("click", async () => {
+      await api.deleteBookmark(mark.id);
+      await renderBookmarks();
+    });
+    actions.append(jump, remove);
+    row.append(main, actions);
+    row.addEventListener("click", (event) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      void reader.goToHref(mark.href).then(closePanel);
+    });
+    body.appendChild(row);
+  }
+}
+
+async function renderNotes() {
+  await reader.refreshAnnotations();
+  const body = $("panel-body");
+  const list = reader.getAnnotations();
+  body.replaceChildren();
+  if (!list.length) {
+    body.appendChild(
+      el("p", "panel-empty", "Select text while reading to highlight it, then add a note."),
+    );
+    return;
+  }
+  for (const note of list) {
+    const row = el("div", "list-row");
+    const main = el("div", "list-row-main");
+    const quote = el("div", "quote");
+    quote.textContent = `“${note.quote}”`;
+    const input = document.createElement("textarea");
+    input.className = "note-input";
+    input.rows = note.note ? 3 : 1;
+    input.placeholder = "Add a note…";
+    input.value = note.note;
+    input.addEventListener("change", async () => {
+      await api.updateAnnotation({ id: note.id, note: input.value });
+      note.note = input.value;
+    });
+
+    const swatches = el("div", "swatch-row");
+    for (const color of ["yellow", "green", "blue", "pink"]) {
+      const swatch = el("button", `swatch sw-${color}`);
+      if (note.color === color) swatch.classList.add("active");
+      swatch.title = color;
+      swatch.addEventListener("click", async () => {
+        await api.updateAnnotation({ id: note.id, color });
+        note.color = color;
+        swatches.querySelectorAll(".swatch").forEach((s) => s.classList.remove("active"));
+        swatch.classList.add("active");
+        await reader.refreshAnnotations();
+      });
+      swatches.appendChild(swatch);
+    }
+
+    const actions = el("div", "list-row-actions");
+    const jump = el("button", "icon-btn");
+    jump.title = "Go to highlight";
+    jump.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+    jump.addEventListener("click", async () => {
+      await reader.goToHref(note.href);
+      closePanel();
+    });
+    const remove = el("button", "icon-btn");
+    remove.title = "Delete highlight";
+    remove.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>';
+    remove.addEventListener("click", async () => {
+      await api.deleteAnnotation(note.id);
+      await renderNotes();
+    });
+    actions.append(jump, remove);
+
+    main.append(quote, input, swatches);
+    row.append(main, actions);
+    body.appendChild(row);
+  }
+}
+
+/* ------------------------------------------------------------------ input */
+
+function isTyping(target: EventTarget | null): boolean {
+  const node = target as HTMLElement | null;
+  if (!node) return false;
+  const tag = node.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    node.isContentEditable
+  );
+}
+
+function bindKeys() {
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (panelMode) {
+        setPanel(null);
+        return;
+      }
+      if (document.querySelector(".sheet") || document.querySelector(".context-menu")) {
+        closeOverlays();
+        document.querySelector(".sheet")?.remove();
+        return;
+      }
+      if (!readerEl.hidden) {
+        showLibrary();
+        return;
+      }
+    }
+
+    if (readerEl.hidden || isTyping(event.target)) return;
+    if (document.querySelector(".sheet")) return;
+
+    switch (event.key) {
+      case "ArrowRight":
+      case "PageDown":
+      case " ":
+      case "j":
+        event.preventDefault();
+        void reader.next();
+        break;
+      case "ArrowLeft":
+      case "PageUp":
+      case "k":
+        event.preventDefault();
+        void reader.prev();
+        break;
+      case "Home":
+        event.preventDefault();
+        void reader.goToHref(reader.getToc()[0]?.href ?? "");
+        break;
+      case "t":
+        event.preventDefault();
+        togglePanel("toc");
+        break;
+      case "s":
+        event.preventDefault();
+        togglePanel("search");
+        break;
+      case "b":
+        event.preventDefault();
+        void reader.toggleBookmark();
+        break;
+      case "n":
+        event.preventDefault();
+        togglePanel("notes");
+        break;
+      case "f":
+        event.preventDefault();
+        void toggleFullscreen();
+        break;
+      case "+":
+      case "=":
+        event.preventDefault();
+        reader.nudgeFont(1);
+        break;
+      case "-":
+      case "_":
+        event.preventDefault();
+        reader.nudgeFont(-1);
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await readerEl.requestFullscreen();
+  } catch {
+    toast("Fullscreen is unavailable in this window.");
+  }
+}
+
+function bindChrome() {
+  $("zone-next").addEventListener("click", () => {
+    void reader.next();
+    reader.showChromeTemporarily();
+  });
+  $("zone-prev").addEventListener("click", () => {
+    void reader.prev();
+    reader.showChromeTemporarily();
+  });
+  $("btn-next").addEventListener("click", () => void reader.next());
+  $("btn-prev").addEventListener("click", () => void reader.prev());
+  $("btn-fs").addEventListener("click", () => void toggleFullscreen());
+  readerEl.addEventListener(
+    "mousemove",
+    (event) => {
+      const bottom = window.innerHeight - event.clientY < 90;
+      (reader as unknown as { chrome: HTMLElement }).chrome.classList.toggle("show", bottom);
+    },
+    { passive: true },
+  );
+  $("btn-back").addEventListener("click", () => showLibrary());
+  $("btn-toc").addEventListener("click", () => togglePanel("toc"));
+  $("btn-bookmarks").addEventListener("click", () => togglePanel("bookmarks"));
+  $("btn-notes").addEventListener("click", () => togglePanel("notes"));
+  $("btn-search").addEventListener("click", () => togglePanel("search"));
+  $("btn-settings").addEventListener("click", showSettings);
+  $("panel-close").addEventListener("click", () => setPanel(null));
+  scrimEl.addEventListener("click", () => setPanel(null));
+  $<HTMLInputElement>("panel-input").addEventListener("input", (event) => {
+    if (panelMode === "search") runSearch((event.target as HTMLInputElement).value);
+  });
+}
+
+function showSettings() {
+  openSettingsSheet(settings, (next) => {
+    settings = next;
+    reader.applySettings();
+  });
+}
+
+/* ------------------------------------------------------------------ setup */
+
+async function bindDragDrop() {
+  try {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    const webview = getCurrentWebview();
+    await webview.onDragDropEvent(async (event) => {
+      if (event.payload.type !== "drop") return;
+      const paths = event.payload.paths.filter((p) =>
+        p.toLowerCase().endsWith(".epub"),
+      );
+      if (!paths.length) return;
+      if (readerEl.hidden) await library.importPaths(paths);
+      else toast("Open the library first to add more books.");
+    });
+  } catch {
+    /* drag & drop is optional */
+  }
+}
+
+async function boot() {
+  settings = await loadSettings();
+  applyTheme(settings.theme);
+
+  library = new Library(
+    $("lib-grid"),
+    $("lib-empty"),
+    $<HTMLInputElement>("lib-filter"),
+    $<HTMLSelectElement>("lib-sort"),
+    {
+      onOpen: (book) => void openBook(book),
+      onImport: () => void library.importViaDialog(),
+      onChanged: () => void refreshLibrary(),
+      onNotify: toast,
+    },
+  );
+
+  reader = new Reader(
+    $("epub-viewport"),
+    $("epub-content"),
+    $<HTMLInputElement>("page-slider"),
+    $("page-label"),
+    $("chrome"),
+    $("topbar-sub"),
+    settings,
+    {
+      onClose: () => showLibrary(),
+      onProgress: (progress, locator) => {
+        const id = reader.currentBookId;
+        if (!id) return;
+        void api.saveProgress(id, progress, JSON.stringify(locator));
+        const local = books.find((b) => b.id === id);
+        if (local) {
+          local.progress = progress;
+          local.locator = JSON.stringify(locator);
+        }
+      },
+      onBookChange: () => {
+        const id = reader.currentBookId;
+        const local = books.find((b) => b.id === id);
+        if (local) library.patch(local);
+      },
+      onNotify: toast,
+      onTogglePanel: (mode) => mode && setPanel(mode),
+    },
+  );
+
+  $("btn-import").addEventListener("click", () => void library.importViaDialog());
+  $("btn-import-empty").addEventListener("click", () => void library.importViaDialog());
+  bindKeys();
+  bindChrome();
+  window.addEventListener("beforeunload", () => reader.flushSave());
+
+  busy("Loading library…");
+  try {
+    await refreshLibrary();
+  } catch (error) {
+    toast(String(error));
+  } finally {
+    idle();
+  }
+  void bindDragDrop();
+}
+
+void boot();

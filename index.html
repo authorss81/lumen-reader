@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lumen Reader</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header id="topbar" class="topbar" hidden>
+        <button class="icon-btn" id="btn-back" title="Back to library (Esc)" aria-label="Back to library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+        </button>
+        <div class="topbar-title">
+          <div class="topbar-book" id="topbar-book"></div>
+          <div class="topbar-sub" id="topbar-sub"></div>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="btn-toc" title="Contents (T)" aria-label="Table of contents">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
+          </button>
+          <button class="icon-btn" id="btn-bookmarks" title="Bookmarks (B)" aria-label="Bookmarks">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z" /></svg>
+          </button>
+          <button class="icon-btn" id="btn-notes" title="Highlights &amp; notes (N)" aria-label="Notes">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M4 15h16M4 11h10" /></svg>
+          </button>
+          <button class="icon-btn" id="btn-search" title="Search (S)" aria-label="Search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>
+          </button>
+          <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <main id="library" class="library">
+        <div class="library-head">
+          <div class="brand">
+            <h1>Lumen</h1>
+            <p class="brand-sub">EPUB library</p>
+          </div>
+          <div class="library-tools">
+            <input id="lib-filter" class="input" type="search" placeholder="Filter by title or author" autocomplete="off" />
+            <select id="lib-sort" class="input select" aria-label="Sort books">
+              <option value="recent">Recently read</option>
+              <option value="added">Date added</option>
+              <option value="title">Title</option>
+              <option value="author">Author</option>
+              <option value="progress">Progress</option>
+            </select>
+            <button class="btn btn-primary" id="btn-import">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              Add books
+            </button>
+          </div>
+        </div>
+        <div id="lib-grid" class="grid"></div>
+        <div id="lib-empty" class="empty" hidden>
+          <div class="empty-art" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 012-2h13v18H6a2 2 0 01-2-2z" /><path d="M4 17h15" /></svg>
+          </div>
+          <h2>Your shelf is empty</h2>
+          <p>Add <code>.epub</code> files to start reading. You can also drag them onto this window.</p>
+          <button class="btn btn-primary" id="btn-import-empty">Add books</button>
+        </div>
+      </main>
+
+      <section id="reader" class="reader" hidden>
+        <div id="reader-scroll" class="reader-scroll">
+          <div id="epub-viewport" class="epub-viewport">
+            <div id="epub-content" class="epub-content"></div>
+          </div>
+        </div>
+        <button class="zone zone-prev" id="zone-prev" aria-label="Previous page"></button>
+        <button class="zone zone-next" id="zone-next" aria-label="Next page"></button>
+
+        <div id="chrome" class="chrome">
+          <div class="chrome-left">
+            <button class="icon-btn" id="btn-prev" title="Previous page (←)" aria-label="Previous page">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+            </button>
+            <input id="page-slider" class="slider" type="range" min="0" max="0" value="0" aria-label="Page" />
+            <button class="icon-btn" id="btn-next" title="Next page (→)" aria-label="Next page">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+          <div class="chrome-right">
+            <span id="page-label" class="page-label"></span>
+            <button class="icon-btn" id="btn-fs" title="Fullscreen (F)" aria-label="Fullscreen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <aside id="panel" class="panel" hidden>
+        <div class="panel-head">
+          <div class="tabs" id="panel-tabs"></div>
+          <button class="icon-btn" id="panel-close" aria-label="Close panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div class="panel-search">
+          <input id="panel-input" class="input" type="search" placeholder="Search this book" autocomplete="off" />
+        </div>
+        <div id="panel-body" class="panel-body"></div>
+      </aside>
+
+      <div id="scrim" class="scrim" hidden></div>
+
+      <div id="toast" class="toast" hidden></div>
+
+      <div id="loading" class="loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="loading-text">Loading…</p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
