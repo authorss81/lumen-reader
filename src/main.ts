@@ -1,9 +1,11 @@
 import { api, el, formatDate, type BookMeta } from "./api";
-import { closeOverlays, Library } from "./library";
+import { closeOverlays, Library, promptModal } from "./library";
 import { Reader, excerptHtml, flatToc, parseLocator, type PanelMode } from "./reader";
 import {
   applyTheme,
+  effectiveTheme,
   loadSettings,
+  watchSystemTheme,
   openSettingsSheet,
   type AppSettings,
 } from "./settings";
@@ -265,6 +267,21 @@ async function runSearch(query: string) {
   }, 220);
 }
 
+/** window.prompt is disabled in WebView2, so renaming goes through our modal. */
+async function renameBookmarkFlow(mark: { id: number; label: string }) {
+  await promptModal({
+    title: "Rename bookmark",
+    label: "Label",
+    value: mark.label,
+    confirmLabel: "Rename",
+    onConfirm: async (value) => {
+      await api.renameBookmark(mark.id, value);
+      mark.label = value;
+      await renderBookmarks();
+    },
+  });
+}
+
 async function renderBookmarks() {
   await reader.refreshBookmarks();
   const body = $("panel-body");
@@ -299,12 +316,7 @@ async function renderBookmarks() {
     title.className = "list-row-title";
     title.textContent = mark.label;
     title.title = "Double-click to rename";
-    title.addEventListener("dblclick", async () => {
-      const next = prompt("Rename bookmark", mark.label);
-      if (next === null) return;
-      await reader.renameBookmark(mark, next);
-      await renderBookmarks();
-    });
+    title.addEventListener("dblclick", () => void renameBookmarkFlow(mark));
 
     // Show where in the book this bookmark sits, not just the date.
     const saved = parseLocator(mark.locator);
@@ -334,12 +346,7 @@ async function renderBookmarks() {
     const rename = el("button", "icon-btn");
     rename.title = "Rename";
     rename.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>';
-    rename.addEventListener("click", async () => {
-      const next = prompt("Rename bookmark", mark.label);
-      if (next === null) return;
-      await reader.renameBookmark(mark, next);
-      await renderBookmarks();
-    });
+    rename.addEventListener("click", () => void renameBookmarkFlow(mark));
     const remove = el("button", "icon-btn");
     remove.title = "Delete";
     remove.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>';
@@ -445,13 +452,19 @@ function isTyping(target: EventTarget | null): boolean {
 function bindKeys() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      // Blur first: removing a focused <textarea> without a `change` event
+      // discards what the user had typed. This must run before the isTyping
+      // guard below.
+      if (isTyping(event.target)) {
+        (event.target as HTMLElement).blur();
+        return;
+      }
       if (panelMode) {
         setPanel(null);
         return;
       }
       if (document.querySelector(".sheet") || document.querySelector(".context-menu")) {
         closeOverlays();
-        document.querySelector(".sheet")?.remove();
         return;
       }
       if (!readerEl.hidden) {
@@ -594,9 +607,13 @@ async function bindDragDrop() {
 }
 
 /**
- * Import and open any EPUB the shell asked for. This covers double-clicking a
- * .epub (file association) and launching a second copy while we already run,
- * in which case the Rust side queues the path and we drain it here.
+ * Import and open any EPUB the shell asked for. Covers double-clicking a .epub
+ * (file association) and launching a second copy while we already run, in which
+ * case the Rust side queues the path and we drain it here.
+ *
+ * `library.importPaths` returns the rows it inserted, and those carry the
+ * canonicalised path — which on Windows is not the string the shell handed us.
+ * Matching on the input paths instead would always miss.
  */
 async function drainPendingOpens(): Promise<void> {
   let paths: string[] = [];
@@ -608,29 +625,29 @@ async function drainPendingOpens(): Promise<void> {
   const epubs = paths.filter((p) => p.toLowerCase().endsWith(".epub"));
   if (!epubs.length) return;
 
-  let ids: string[] = [];
+  const added = await library.importPaths(epubs);
+  await refreshLibrary();
+
+  const first = added[0];
+  if (!first) return;
+
+  const book = books.find((b) => b.id === first.id) ?? first;
   if (readerEl.hidden) {
-    await library.importPaths(epubs);
-    await refreshLibrary();
-    ids = books
-      .filter((b) => epubs.some((p) => b.path.toLowerCase() === p.toLowerCase()))
-      .map((b) => b.id);
+    await openBook(book);
   } else {
-    // Already reading: add to the shelf but stay where we are.
-    await library.importPaths(epubs);
-    await refreshLibrary();
-    ids = books
-      .filter((b) => epubs.some((p) => b.path.toLowerCase() === p.toLowerCase()))
-      .map((b) => b.id);
+    // Already reading something: the book is now on the shelf, but do not
+    // yank the reader away from the page they are on.
+    toast(`Added “${book.title}” to your shelf.`);
   }
-  const first = books.find((b) => ids.includes(b.id));
-  if (first) await openBook(first);
-  else if (epubs.length) toast(`Could not open ${epubs[0].split(/[\\/]/).pop()}`);
 }
 
 async function boot() {
   settings = await loadSettings();
-  applyTheme(settings.theme);
+  // effectiveTheme, not the raw stored value: with "Match Windows" enabled the
+  // stored theme is only a fallback, and using it directly meant the setting
+  // reverted to the last manual pick on every launch.
+  applyTheme(effectiveTheme(settings));
+  watchSystemTheme(settings, applyTheme);
 
   library = new Library(
     $("lib-grid"),

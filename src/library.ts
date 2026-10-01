@@ -67,7 +67,7 @@ constructor(
     this.render();
   }
 
-  forget(bookId: string) {
+forget(bookId: string) {
     coverCache.delete(bookId);
     this.books = this.books.filter((b) => b.id !== bookId);
     this.render();
@@ -231,33 +231,54 @@ constructor(
     ]);
   }
 
-  private editDetails(book: BookMeta) {
-    const title = prompt("Title", book.title);
-    if (title === null) return;
-    const author = prompt("Author", book.author);
-    if (author === null) return;
-    const trimmed = title.trim() || book.title;
-    void api
-      .updateBook(book.id, trimmed, author.trim())
-      .then(() => {
-        book.title = trimmed;
-        book.author = author.trim();
+private async editDetails(book: BookMeta) {
+    const title = await promptModal({
+      title: "Edit book details",
+      label: "Title",
+      value: book.title,
+      onConfirm: (value) => {
+        const next = value.trim() || book.title;
+        book.title = next;
         this.render();
-        this.cb.onNotify("Details updated");
-      })
-      .catch((e) => this.cb.onNotify(String(e)));
+      },
+    });
+    if (title === null) return;
+    const author = await promptModal({
+      title: "Edit book details",
+      label: "Author",
+      value: book.author,
+      onConfirm: (value) => {
+        book.author = value.trim();
+        this.render();
+      },
+    });
+    if (author === null) return;
+    void api
+      .updateBook(book.id, book.title, book.author)
+      .then(() => this.cb.onNotify("Details updated"))
+      .catch((error) => this.cb.onNotify(String(error)));
   }
 
   private confirmRemove(book: BookMeta) {
     confirmModal({
       title: "Remove from library?",
-      body: `“${book.title}” will be removed from Lumen. The ${escapeHtml(
-        book.path.split(/[\\/]/).pop() || "file",
-      )} file on disk is not deleted, along with your bookmarks and notes.`,
+      // The title comes from the EPUB's own metadata, so it is attacker
+      // controlled and must be escaped before reaching innerHTML.
+      body:
+        `“${escapeHtml(book.title)}” will be removed from Lumen, along with its ` +
+        `bookmarks and highlights. The file <code>${escapeHtml(
+          book.path.split(/[\\/]/).pop() || "…",
+        )}</code> is not deleted from disk.`,
       confirmLabel: "Remove",
       danger: true,
       onConfirm: () => {
-        this.forget(book.id);
+        // The row has to actually leave SQLite. `forget()` alone only filtered
+        // the in-memory array, so `refreshLibrary()` brought the book straight
+        // back and the confirmation was a lie.
+        void api
+          .removeBook(book.id)
+          .then(() => this.forget(book.id))
+          .catch((error) => this.cb.onNotify(String(error)));
         this.cb.onNotify("Removed from library");
       },
     });
@@ -270,7 +291,14 @@ async importViaDialog() {
     if (paths.length) await this.importPaths(paths);
   }
 
-  async importPaths(paths: string[]) {
+  /**
+   * Import a list of paths and return what was actually added.
+   *
+   * The returned `BookMeta` carries the *canonicalised* path, which on Windows
+   * differs from the path the caller passed in. Callers must therefore use the
+   * returned rows rather than trying to match on the input paths.
+   */
+  async importPaths(paths: string[]): Promise<BookMeta[]> {
     try {
       const report = await api.importBooks(paths);
       for (const book of report.added) coverCache.delete(book.id);
@@ -281,16 +309,26 @@ async importViaDialog() {
             : `Added ${report.added.length} books`,
         );
       }
-      for (const failure of report.failed) {
+      if (report.failed.length) {
         this.cb.onNotify(
-          `${failure.path.split(/[\\/]/).pop()}: ${failure.error}`,
+          report.failed.length === 1
+            ? `Could not add ${basename(report.failed[0].path)}: ${report.failed[0].error}`
+            : `${report.failed.length} files could not be added: ${report.failed
+                .map((f) => basename(f.path))
+                .join(", ")}`,
         );
       }
       await this.cb.onChanged();
+      return report.added;
     } catch (error) {
       this.cb.onNotify(String(error));
+      return [];
     }
   }
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
 }
 
 const SORTS: Record<string, (list: BookMeta[]) => BookMeta[]> = {
@@ -322,12 +360,32 @@ export interface MenuItem {
 
 let activeMenu: HTMLElement | null = null;
 let activeModal: HTMLElement | null = null;
+let activeScrim: HTMLElement | null = null;
 
+/**
+ * Tear down whichever overlay is open. Every overlay registers here so that
+ * Escape, the close buttons and a fresh open cannot leave a scrim behind — a
+ * stranded full-screen scrim silently swallows every click and the wheel, and
+ * looks exactly like a hung app.
+ */
 export function closeOverlays() {
   activeMenu?.remove();
   activeMenu = null;
   activeModal?.remove();
   activeModal = null;
+  if (activeScrim) {
+    activeScrim.remove();
+    activeScrim = null;
+  }
+  document.querySelectorAll(".scrim.overlay-owned").forEach((node) => node.remove());
+}
+
+/** Build a themed scrim that is tracked by `closeOverlays`. */
+export function overlayScrim(onClick: () => void): HTMLElement {
+  const scrim = el("div", "scrim overlay-owned");
+  scrim.addEventListener("click", onClick);
+  activeScrim = scrim;
+  return scrim;
 }
 
 export function openContextMenu(
@@ -391,24 +449,116 @@ export function confirmModal(options: {
   document.body.appendChild(scrim);
   activeModal = scrim;
 
-  const done = () => closeOverlays();
+  // One capture-phase listener per modal, torn down on close. Without this the
+  // handler leaked: after a single use of this dialog, Escape stopped reaching
+  // the rest of the app (it called stopPropagation), and Enter re-fired every
+  // historical onConfirm.
+  const abort = new AbortController();
+  const done = () => {
+    abort.abort();
+    closeOverlays();
+  };
+
   cancel.addEventListener("click", done);
+  ok.addEventListener("click", () => {
+    done();
+    options.onConfirm();
+  });
   scrim.addEventListener("click", (event) => {
     if (event.target === scrim) done();
   });
   document.addEventListener(
     "keydown",
     (event) => {
-      if (event.key === "Escape" || event.key === "Enter") {
+      if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         done();
-        if (event.key === "Enter") options.onConfirm();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        done();
+        options.onConfirm();
       }
     },
-    { capture: true },
+    { capture: true, signal: abort.signal },
   );
   ok.focus();
+}
+
+/**
+ * In-app replacement for `window.prompt`, which wry does not enable — the
+ * native version resolves to null and shows nothing, so every rename and
+ * metadata edit silently did nothing.
+ */
+export function promptModal(options: {
+  title: string;
+  label: string;
+  value: string;
+  confirmLabel?: string;
+  onConfirm: (value: string) => void;
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    closeOverlays();
+    const scrim = el("div", "modal");
+    const box = el("div", "modal-box");
+    box.appendChild(el("h3", undefined, options.title));
+
+    const field = el("div", "field");
+    field.appendChild(el("div", "field-label", options.label));
+    const input = document.createElement("input");
+    input.className = "input";
+    input.value = options.value;
+    input.spellcheck = false;
+    field.appendChild(input);
+    box.appendChild(field);
+
+    const actions = el("div", "modal-actions");
+    const cancel = el("button", "btn", "Cancel");
+    cancel.type = "button";
+    const ok = el("button", "btn btn-primary", options.confirmLabel ?? "Save");
+    ok.type = "button";
+    actions.append(cancel, ok);
+    box.appendChild(actions);
+    scrim.appendChild(box);
+    document.body.appendChild(scrim);
+    activeModal = scrim;
+
+    const abort = new AbortController();
+    let done = false;
+    const finish = (result: string | null) => {
+      if (done) return;
+      done = true;
+      abort.abort();
+      closeOverlays();
+      if (result !== null) options.onConfirm(result);
+      resolve(result);
+    };
+
+    cancel.addEventListener("click", () => finish(null));
+    ok.addEventListener("click", () => finish(input.value));
+    scrim.addEventListener("click", (event) => {
+      if (event.target === scrim) finish(null);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(input.value);
+      }
+    });
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          finish(null);
+        }
+      },
+      { capture: true, signal: abort.signal },
+    );
+    input.focus();
+    input.select();
+  });
 }
 
 export { coverCache };

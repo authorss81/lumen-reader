@@ -7,8 +7,13 @@ pub mod limits {
     pub const MAX_ENTRIES: usize = 20_000;
     /// Maximum size of a single uncompressed file we are willing to buffer (32 MiB).
     pub const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
-    /// Maximum cumulative uncompressed bytes we will read from one book (512 MiB).
-    pub const MAX_TOTAL_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
+    /// Maximum size of the *archive on disk* (512 MiB).
+    ///
+    /// This is deliberately NOT described as a cumulative uncompressed budget:
+    /// there is no running total across reads. The per-entry cap above plus the
+    /// compression-ratio guard are what actually bound how much a hostile book
+    /// can inflate.
+    pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
     /// Refuse any entry whose compression ratio looks like a zip bomb (1:200).
     pub const MAX_COMPRESSION_RATIO: u64 = 200;
     /// Maximum combined size of images inlined into a single chapter (24 MiB).

@@ -159,31 +159,109 @@ fn percent_decode(s: &str) -> String {
         .to_string()
 }
 
-/// Decode markup bytes honouring BOM and `<meta charset>`.
+/// Decode markup bytes. The BOM is authoritative, then an XML declaration,
+/// then a real `<meta charset>`, then UTF-8.
+///
+/// Previously only a bare `charset` substring was searched for in the first
+/// 4 KiB. A UTF-16LE EPUB 2 book decoded to mojibake, `Document::parse` failed,
+/// and the whole book was rejected rather than one chapter.
 fn decode_markup(bytes: &[u8]) -> String {
+    // BOMs first: they are unambiguous and cost nothing to check.
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(&bytes[3..]).into_owned();
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return decode_with(bytes, encoding_rs::UTF_16LE);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return decode_with(bytes, encoding_rs::UTF_16BE);
+    }
+    if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+        || bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00])
+    {
+        // UTF-32; not supported by encoding_rs, but lossy UTF-8 still beats
+        // handing the raw bytes to the XML parser.
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+
     const PROBE: usize = 4096;
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(PROBE)]).to_string();
-    let lower = head.to_ascii_lowercase();
-    let label = if let Some(i) = lower.find("charset") {
-        let rest = &lower[i + 7..];
-        let rest = rest.trim_start();
-        let rest = rest.trim_start_matches(['=', '"', '\'']);
-        let label: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        Some(label)
-    } else {
-        None
-    };
 
-    if let Some(label) = label {
-        if let Some(enc) = encoding_rs::Encoding::for_label(label.as_bytes()) {
-            let (text, _, _) = enc.decode(bytes);
-            return text.into_owned();
+    // 1. An XML declaration's encoding="...", which EPUB 2 relies on heavily.
+    if let Some(label) = capture_quoted(head.to_ascii_lowercase().as_str(), "encoding") {
+        if let Some(enc) = encoding_for(&label) {
+            return decode_with(bytes, enc);
         }
     }
+
+    // 2. A <meta charset> or a meta http-equiv content-type, but only when it
+    //    appears inside an actual <meta ...> tag, so the word "charset" in body
+    //    text or a comment cannot select a bogus encoding.
+    let lower = head.to_ascii_lowercase();
+    if let Some(meta) = lower.find("<meta") {
+        let chunk_end = lower[meta..].find('>').map(|i| meta + i).unwrap_or(lower.len());
+        let tag = &lower[meta..chunk_end];
+        if let Some(label) = capture_quoted(tag, "charset") {
+            if let Some(enc) = encoding_for(&label) {
+                return decode_with(bytes, enc);
+            }
+        }
+        if tag.contains("http-equiv") {
+            if let Some(label) = capture_quoted(tag, "content") {
+                if let Some(pos) = label.to_ascii_lowercase().find("charset=") {
+                    let label = &label[pos + 8..];
+                    let label: String = label
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+                    if let Some(enc) = encoding_for(&label) {
+                        return decode_with(bytes, enc);
+                    }
+                }
+            }
+        }
+    }
+
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn decode_with(bytes: &[u8], enc: &'static encoding_rs::Encoding) -> String {
+    let (text, _, _) = enc.decode(bytes);
+    text.into_owned()
+}
+
+fn encoding_for(label: &str) -> Option<&'static encoding_rs::Encoding> {
+    let label = label.trim().trim_matches(['"', '\'']);
+    if label.is_empty() {
+        return None;
+    }
+    encoding_rs::Encoding::for_label(label.as_bytes())
+}
+
+/// Pull the value out of `name="value"` or `name='value'` inside `haystack`.
+/// Byte length of `c` after Unicode lower-casing. This is not always equal to
+/// `c.len_utf8()`: `U+0130` is 2 bytes and folds to 3.
+fn folded_len(c: char) -> usize {
+    c.to_lowercase().map(|lc| lc.len_utf8()).sum()
+}
+
+fn capture_quoted(haystack: &str, name: &str) -> Option<String> {
+    let mut from = 0usize;
+    while let Some(rel) = haystack[from..].find(name) {
+        let start = from + rel + name.len();
+        let rest = &haystack[start..];
+        let trimmed = rest.trim_start();
+        let mut quote = trimmed.chars();
+        match quote.next() {
+            Some(q @ ('"' | '\'')) => {
+                let value: String = trimmed[1..].chars().take_while(|c| *c != q).collect();
+                return Some(value);
+            }
+            _ => {}
+        }
+        from = start;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +275,31 @@ fn re_at_import() -> &'static Regex {
 fn re_css_comment() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?s)/\*(.*?)\*/").unwrap())
+}
+/// Neutralise any attempt to terminate the `<style>` element we are about to
+/// emit. CSS comments are collapsed first so a sequence split across a comment
+/// cannot slip through, then every `</` becomes `<\\/`. That escape is invalid
+/// inside CSS, so it renders as literal text instead of closing the element.
+fn guard_style_block(css: &str) -> String {
+    let squashed = re_css_comment().replace_all(css, " ");
+    let mut out = String::with_capacity(squashed.len() + 16);
+    let mut prev_slash = false;
+    for ch in squashed.chars() {
+        if ch == '<' {
+            out.push('<');
+            out.push('\\');
+            prev_slash = false;
+            continue;
+        }
+        if prev_slash {
+            out.push(ch);
+            prev_slash = false;
+            continue;
+        }
+        prev_slash = ch == '\\';
+        out.push(ch);
+    }
+    out
 }
 fn re_url_dq() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -370,17 +473,24 @@ fn attr_remove(attrs: &mut Attrs, key: &str) {
 pub struct Epub {
     archive: zip::ZipArchive<File>,
     names: HashMap<String, usize>,
-    pub manifest: Manifest,
+    manifest: Manifest,
+    /// Path of the OPF, discovered cheaply from container.xml.
+    opf_path: String,
+    /// Set once the OPF/NCX/nav have been parsed.
+    manifest_ready: bool,
 }
 
 impl Epub {
+    /// Open the archive and index its entries. Parsing the package document is
+    /// deferred to `ensure_manifest`, so a cache hit costs nothing.
     pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path).map_err(|e| EpubError::Io(format!("{}: {e}", path.display())))?;
+        let file =
+            File::open(path).map_err(|e| EpubError::Io(format!("{}: {e}", path.display())))?;
         let file_len = file.metadata()?.len();
         if file_len == 0 {
             return Err(EpubError::Zip("file is empty".into()));
         }
-        if file_len > limits::MAX_TOTAL_UNCOMPRESSED {
+        if file_len > limits::MAX_ARCHIVE_BYTES {
             return Err(EpubError::Limit("file larger than 512 MiB".into()));
         }
         let mut archive = zip::ZipArchive::new(file)?;
@@ -410,12 +520,51 @@ impl Epub {
         }
 
         let opf_path = Self::find_opf(&mut archive, &names)?;
-        let manifest = Self::parse_manifest(&mut archive, &names, &opf_path)?;
-        if manifest.chapters.is_empty() {
-            return Err(EpubError::Zip("spine contains no readable documents".into()));
-        }
 
-        Ok(Self { archive, names, manifest })
+        Ok(Self {
+            archive,
+            names,
+            manifest: Manifest {
+                opf_path: opf_path.clone(),
+                ..Default::default()
+            },
+            opf_path,
+            manifest_ready: false,
+        })
+    }
+
+    /// Parse the package document if that has not happened yet. Every entry
+    /// point that needs the spine or the navigation calls this first.
+    pub fn ensure_manifest(&mut self) -> Result<()> {
+        if !self.manifest_ready {
+            let manifest = Self::parse_manifest(&mut self.archive, &self.names, &self.opf_path)?;
+            if manifest.chapters.is_empty() {
+                return Err(EpubError::Zip("spine contains no readable documents".into()));
+            }
+            self.manifest = manifest;
+            self.manifest_ready = true;
+        }
+        Ok(())
+    }
+
+    /// The package document. Only meaningful after `ensure_manifest`.
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    /// Install a manifest that was parsed earlier, so `ensure_manifest` becomes
+    /// a no-op. This is what makes a warm cache actually cheap.
+    pub fn adopt_manifest(&mut self, manifest: Manifest) {
+        self.manifest = manifest;
+        self.manifest_ready = true;
+    }
+
+    /// Read the manifest, opening the file if necessary. The common entry point
+    /// for a one-shot command.
+    pub fn open_with_manifest(path: &Path) -> Result<Self> {
+        let mut epub = Self::open(path)?;
+        epub.ensure_manifest()?;
+        Ok(epub)
     }
 
     // -- raw reads --------------------------------------------------------
@@ -507,11 +656,11 @@ impl Epub {
             match node.tag_name().name() {
                 "title" if is_dublin_core(node.tag_name().namespace()) => {
                     if manifest.title.is_empty() {
-                        manifest.title = node.text().unwrap_or("").trim().to_string();
+                        manifest.title = collect_text(&node).trim().to_string();
                     }
                 }
                 "creator" if is_dublin_core(node.tag_name().namespace()) => {
-                    let value = node.text().unwrap_or("").trim().to_string();
+                    let value = collect_text(&node).trim().to_string();
                     if !value.is_empty() {
                         if manifest.author.is_empty() {
                             manifest.author = value.clone();
@@ -522,19 +671,19 @@ impl Epub {
                     }
                 }
                 "language" if is_dublin_core(node.tag_name().namespace()) => {
-                    manifest.language = node.text().unwrap_or("").trim().to_string();
+                    manifest.language = collect_text(&node).trim().to_string();
                 }
                 "publisher" if is_dublin_core(node.tag_name().namespace()) => {
-                    manifest.publisher = node.text().unwrap_or("").trim().to_string();
+                    manifest.publisher = collect_text(&node).trim().to_string();
                 }
                 "description" if is_dublin_core(node.tag_name().namespace()) => {
-                    manifest.description = collapse(node.text().unwrap_or(""));
+                    manifest.description = collapse(&collect_text(&node));
                 }
                 "identifier" if is_dublin_core(node.tag_name().namespace()) => {
-                    manifest.identifier = node.text().unwrap_or("").trim().to_string();
+                    manifest.identifier = collect_text(&node).trim().to_string();
                 }
                 "rights" if is_dublin_core(node.tag_name().namespace()) => {
-                    manifest.rights = node.text().unwrap_or("").trim().to_string();
+                    manifest.rights = collect_text(&node).trim().to_string();
                 }
                 "meta" => {
                     let name = node.attribute("name").unwrap_or("");
@@ -594,7 +743,7 @@ struct Item {
         }
 
         // ---- spine
-        for node in doc.descendants() {
+for node in doc.descendants() {
             if node.tag_name().name() != "itemref" {
                 continue;
             }
@@ -610,21 +759,31 @@ struct Item {
             if manifest.chapters.len() >= limits::MAX_SPINE_ITEMS {
                 break;
             }
+            // A spine entry that points at nothing, or at something we cannot
+            // read within the limits, used to become a chapter that threw the
+            // moment the reader paged into it.
+            let Some(index) = names.get(&item.href).copied() else {
+                continue;
+            };
+            let Ok(entry) = archive.by_index(index) else {
+                continue;
+            };
+            let size = entry.size();
+            if size > limits::MAX_ENTRY_BYTES {
+                continue;
+            }
             let linear = node
                 .attribute("linear")
                 .map(|v| !v.eq_ignore_ascii_case("no"))
                 .unwrap_or(true);
-            let bytes = match names.get(&item.href).copied() {
-                Some(i) => Self::read_index(archive, i, limits::MAX_ENTRY_BYTES)
-                    .map(|b| b.len() as u64)
-                    .unwrap_or(0),
-                None => 0,
-            };
             manifest.chapters.push(Chapter {
                 href: item.href.clone(),
                 title: String::new(),
                 index: manifest.chapters.len(),
-                bytes,
+                // Read from the central directory. Inflating the document just
+                // to call .len() meant every chapter of the book was
+                // decompressed on every single command, including one page turn.
+                bytes: size,
                 linear,
             });
         }
@@ -714,7 +873,8 @@ struct Item {
     // -- chapters ---------------------------------------------------------
 
     /// Build a fully self-contained, sanitized HTML document for `index`.
-    pub fn chapter(&mut self, index: usize) -> Result<ChapterContent> {
+pub fn chapter(&mut self, index: usize) -> Result<ChapterContent> {
+        self.ensure_manifest()?;
         let chapter = self
             .manifest
             .chapters
@@ -786,11 +946,17 @@ struct Item {
                 }
             }
         }
-        for block in inline_styles.iter().take(64) {
+for block in inline_styles.iter().take(64) {
             css.push_str(&scrub_css(block));
             css.push('\n');
         }
         css.truncate(1_500_000);
+        // The stylesheet is interpolated into the returned HTML *after* the
+        // ammonia gate, so it must be incapable of closing its own <style>
+        // element. `scrub_css` only understands CSS grammar and lets `</style`
+        // through, which would otherwise let a book's .css file inject markup
+        // into the privileged webview.
+        css = guard_style_block(&css);
 
         // 4. Inline images / fonts as data URLs, rewrite links, scrub styles.
         let mut budget = AssetBudget::new(limits::MAX_INLINE_ASSET_BYTES);
@@ -875,7 +1041,8 @@ struct Item {
     }
 
     /// Raw (unsanitized) plain text of every spine document, used for search.
-    pub fn chapter_text(&mut self, index: usize) -> Result<(String, String)> {
+pub fn chapter_text(&mut self, index: usize) -> Result<(String, String)> {
+        self.ensure_manifest()?;
         let chapter = self
             .manifest
             .chapters
@@ -887,7 +1054,8 @@ struct Item {
         Ok((chapter.href.clone(), html_to_text(&source)))
     }
 
-    pub fn cover_data_url(&mut self) -> Result<Option<String>> {
+pub fn cover_data_url(&mut self) -> Result<Option<String>> {
+        self.ensure_manifest()?;
         let Some(href) = self.manifest.cover_href.clone() else {
             return Ok(None);
         };
@@ -1339,10 +1507,23 @@ fn sanitize_html(html: &str) -> String {
     builder.clean(html).to_string()
 }
 
-/// Thin wrapper so the sanitizer can be exercised directly from tests.
+/// Thin wrappers so the sanitizer, the style guard, the decoder and the excerpt
+/// builder can be exercised directly from tests.
 #[cfg(test)]
 pub fn sanitize_html_for_test(html: &str) -> String {
     sanitize_html(html)
+}
+#[cfg(test)]
+pub fn guard_style_for_test(css: &str) -> String {
+    guard_style_block(css)
+}
+#[cfg(test)]
+pub fn decode_for_test(bytes: &[u8]) -> String {
+    decode_markup(bytes)
+}
+#[cfg(test)]
+pub fn excerpt_for_test(text: &str, start: usize, end: usize, needle: &str) -> String {
+    build_excerpt(text, start, end, needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -1350,6 +1531,9 @@ pub fn sanitize_html_for_test(html: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn search_book(epub: &mut Epub, query: &str, max_hits: usize) -> Vec<SearchHit> {
+    if epub.ensure_manifest().is_err() {
+        return Vec::new();
+    }
     let query = query.trim();
     if query.len() < 2 {
         return Vec::new();
@@ -1408,19 +1592,31 @@ fn build_excerpt(text: &str, start: usize, end: usize, needle: &str) -> String {
         suffix.push('…');
     }
     let middle = &text[lo..hi];
-    // Re-locate the match inside the excerpt (case-insensitive) to mark it.
-    let lower = middle.to_lowercase();
-    match lower.find(needle) {
-        Some(rel) => {
-            let m_start = lo + rel;
-            let m_end = m_start + needle.len();
-            format!(
-                "{prefix}{}[[{}]]{}{suffix}",
-                &text[lo..m_start],
-                &text[m_start..m_end],
-                &text[m_end..hi]
-            )
+
+    // Case folding is NOT length preserving (U+0130 folds to 3 bytes from 2), so
+    // an offset taken from `middle.to_lowercase()` cannot index back into
+    // `middle`. Map it forward with a character walk that accumulates folded
+    // lengths. Getting this wrong panics, and `panic = "abort"` kills the
+    // whole process rather than failing one command.
+    let folded = middle.to_lowercase();
+    let mut body = format!("{prefix}{middle}{suffix}");
+    if let Some(rel) = folded.find(&needle.to_lowercase()) {
+        let mut m_start = middle.len();
+        let mut acc = 0usize;
+        for (i, c) in middle.char_indices() {
+            if acc >= rel {
+                m_start = i;
+                break;
+            }
+            acc += folded_len(c);
         }
-None => format!("{prefix}{middle}{suffix}"),
+        let m_end = (m_start + needle.len()).min(middle.len());
+        body = format!(
+            "{prefix}{}[[{}]]{}{suffix}",
+            &middle[..m_start],
+            &middle[m_start..m_end],
+            &middle[m_end..]
+        );
     }
+    body
 }

@@ -27,7 +27,6 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 regex = "1"
 encoding_rs = "0.8"
 percent-encoding = "2"
-url = "2"
 base64 = "0.23"
 
 [profile.release]

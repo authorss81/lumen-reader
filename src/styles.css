@@ -565,22 +565,25 @@ select.select {
 .epub-content.no-anim {
   transition: none;
 }
-/* Scroll mode: hand the viewport back to the browser and drop the page zones. */
+/* Scroll mode: hand the viewport back to the browser and drop the page zones.
+   The offsets themselves are set inline by Reader.relayout() from the margin
+   settings — do not override `top`/`left` here or the text pins to the corner. */
 .epub-viewport.is-scrolling {
   overflow-x: hidden;
   overflow-y: auto;
   scroll-behavior: smooth;
+  /* Room for the chapter divider and a comfortable tail on the last screen. */
+  scroll-padding-bottom: 25vh;
 }
 .epub-viewport.is-scrolling .epub-content {
   position: relative;
-  top: 0 !important;
-  left: 0 !important;
-  height: auto !important;
-  padding-bottom: 40vh;
+  height: auto;
+  min-height: 100%;
 }
 .chrome-left.is-scrolling {
   opacity: 0;
   pointer-events: none;
+  transition: opacity 180ms var(--ease);
 }
 .epub-doc {
   font-family: var(--reader-font);
@@ -828,7 +831,9 @@ html[data-theme="black"] .epub-doc .hl {
 }
 .panel {
   position: fixed;
-  top: 0;
+  /* Sits *below* the topbar so the toolbar icons stay clickable. It used to
+     start at top:0 with a higher z-index, which painted over all five of them. */
+  top: var(--topbar-h);
   right: 0;
   bottom: 0;
   width: var(--panel-w);
@@ -836,7 +841,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  z-index: 40;
+  z-index: 29;
   display: flex;
   flex-direction: column;
   animation: slide-in 0.18s var(--ease);
@@ -1073,7 +1078,7 @@ html[data-theme="black"] .epub-doc .hl {
    ========================================================================= */
 .sheet {
   position: fixed;
-  top: 0;
+  top: var(--topbar-h);
   right: 0;
   bottom: 0;
   width: 340px;
@@ -1081,7 +1086,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  z-index: 40;
+  z-index: 29;
   display: flex;
   flex-direction: column;
   animation: slide-in 0.18s var(--ease);

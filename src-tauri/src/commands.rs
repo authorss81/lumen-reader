@@ -15,7 +15,7 @@ pub struct AppState {
     store: Mutex<Store>,
     /// Parsed OPF/NCX caches keyed by book path. Re-parsing XML on every chapter
     /// request would dominate response time, and this keeps the hot path cheap.
-    manifest_cache: Mutex<HashMap<String, (i64, Arc<Manifest>)>>,
+    manifest_cache: Mutex<HashMap<String, (i64, i64, Arc<Manifest>)>>,
     cache_order: Mutex<Vec<String>>,
     /// EPUB paths handed over by the shell (file association, or a second
     /// launch while we are already running). Drained by the webview.
@@ -75,8 +75,13 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// Open the EPUB behind a stored book id, reusing the cached manifest when the
-/// file on disk has not changed.
+/// Open the EPUB behind a stored book id.
+///
+/// The manifest cache is consulted *before* the package document is parsed.
+/// It used to be consulted after, so the whole OPF/NCX/nav parse happened on
+/// every page turn and the cache only overwrote the result afterwards — the
+/// optimisation it existed for was not in effect. The key is `(mtime, size)` so
+/// a book rewritten within the same second is still detected.
 fn with_epub<F, R>(state: &AppState, book_id: &str, f: F) -> CmdResult<R>
 where
     F: FnOnce(&mut Epub) -> CmdResult<R>,
@@ -87,29 +92,36 @@ where
         .map_err(err)?
         .ok_or_else(|| format!("book {book_id} is not in the library"))?;
     let path = PathBuf::from(&book.path);
-    let mtime = std::fs::metadata(&path).map(|m| mtime_of(&m)).unwrap_or(0);
+    let meta = std::fs::metadata(&path).map_err(err)?;
+    let mtime = mtime_of(&meta);
+    let size = meta.len() as i64;
 
     let cached = {
         let cache = state.manifest_cache.lock().map_err(err)?;
         cache
             .get(&book.path)
-            .filter(|entry| entry.0 == mtime)
-            .map(|entry| entry.1.clone())
+            .filter(|entry| entry.0 == mtime && entry.1 == size)
+            .map(|entry| entry.2.clone())
     };
 
-    let mut file = Epub::open(&path).map_err(err)?;
-    if let Some(manifest) = cached {
-        if manifest.chapters.len() == file.manifest.chapters.len() {
-            file.manifest = manifest.as_ref().clone();
+    let mut file = match cached {
+        Some(manifest) => {
+            let mut file = Epub::open(&path).map_err(err)?;
+            // Cheap: only the zip name index was built.
+            file.adopt_manifest(manifest.as_ref().clone());
+            file
         }
-    } else {
-        let manifest = Arc::new(file.manifest.clone());
-        {
-            let mut cache = state.manifest_cache.lock().map_err(err)?;
-            cache.insert(book.path.clone(), (mtime, manifest));
+        None => {
+            let mut file = Epub::open_with_manifest(&path).map_err(err)?;
+            let manifest = Arc::new(file.manifest().clone());
+            {
+                let mut cache = state.manifest_cache.lock().map_err(err)?;
+                cache.insert(book.path.clone(), (mtime, size, manifest));
+            }
+            state.touch_cache(&book.path);
+            file
         }
-        state.touch_cache(&book.path);
-    }
+    };
     f(&mut file)
 }
 
@@ -130,7 +142,7 @@ fn probe(path: &Path) -> CmdResult<BookMeta> {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path_str = canonical.to_string_lossy().to_string();
 
-    let m = Epub::open(&canonical).map_err(err)?.manifest.clone();
+    let m = Epub::open_with_manifest(&canonical).map_err(err)?.manifest().clone();
     let file_size = meta.len() as i64;
     let mtime = mtime_of(&meta);
 
@@ -240,10 +252,10 @@ pub fn open_book(state: State<'_, AppState>, id: String) -> CmdResult<BookDetail
         with_epub(&state, &id, |file| {
             let cover = file.cover_data_url().ok().flatten();
             Ok((
-                file.manifest.toc.clone(),
-                file.manifest.page_list.clone(),
-                file.manifest.landmarks.clone(),
-                file.manifest.chapters.clone(),
+                file.manifest().toc.clone(),
+                file.manifest().page_list.clone(),
+                file.manifest().landmarks.clone(),
+                file.manifest().chapters.clone(),
                 cover,
             ))
         })?;
@@ -263,7 +275,7 @@ pub fn load_chapter(state: State<'_, AppState>, id: String, index: usize) -> Cmd
     with_epub(&state, &id, |file| {
         let mut content = file.chapter(index).map_err(err)?;
         if content.title.is_empty() {
-            if let Some(chapter) = file.manifest.chapters.get(index) {
+            if let Some(chapter) = file.manifest().chapters.get(index) {
                 content.title = chapter.title.clone();
             }
         }

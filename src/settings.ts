@@ -1,4 +1,5 @@
 import { api, el } from "./api";
+import { overlayScrim } from "./library";
 import type { ReaderSettings } from "./reader";
 
 export interface AppSettings extends ReaderSettings {
@@ -72,11 +73,20 @@ export function openSettingsSheet(
   const close = el("button", "icon-btn");
   close.innerHTML =
     '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-  close.addEventListener("click", () => sheet.remove());
+  // One helper removes the sheet AND its scrim. Removing only the sheet left a
+  // full-screen overlay behind, which swallowed every click and the wheel and
+  // looked like a hung app.
+  const closeSheet = () => {
+    sheet.remove();
+    scrim.remove();
+  };
+  close.addEventListener("click", closeSheet);
   head.append(title, close);
 
   const body = el("div", "sheet-body");
   sheet.append(head, body);
+
+  const scrim = overlayScrim(closeSheet);
 
   const persist = () => {
     applyTheme(effectiveTheme(settings));
@@ -115,7 +125,7 @@ export function openSettingsSheet(
         (id) => {
           settings.followSystemTheme = id === "system";
           persist();
-          sheet.remove();
+          closeSheet();
           openSettingsSheet(settings, onChange);
         },
         true,
@@ -238,8 +248,7 @@ const reset = el("button", "btn", "Reset to defaults");
   reset.style.marginTop = "6px";
   reset.addEventListener("click", () => {
     Object.assign(settings, DEFAULT_SETTINGS);
-    sheet.remove();
-    document.querySelector(".scrim")?.remove();
+    closeSheet();
     applyTheme(effectiveTheme(settings));
     for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
       void api.setSetting(key, settings[key]);
@@ -248,11 +257,6 @@ const reset = el("button", "btn", "Reset to defaults");
   });
   body.appendChild(reset);
 
-  const scrim = el("div", "scrim");
-  scrim.addEventListener("click", () => {
-    sheet.remove();
-    scrim.remove();
-  });
   document.body.append(scrim, sheet);
   (sheet.querySelector("button") as HTMLButtonElement)?.focus();
 }

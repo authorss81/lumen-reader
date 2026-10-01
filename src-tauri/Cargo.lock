@@ -956,7 +956,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "url",
- "windows",
  "zip",
 ]
 

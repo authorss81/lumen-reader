@@ -98,25 +98,28 @@ in the webview.
 **1. Path traversal is impossible.** Hrefs are resolved through a segment
 normaliser that refuses `..` past the archive root, backslashes, NUL bytes,
 absolute paths and percent-encoded traversal (`%2e%2e`). Zip entries with
-suspicious names are never indexed at all.
+suspicious names are never indexed at all, and no path derived from a book is
+ever handed to the filesystem — every read goes through the zip name index.
 
-**2. Decompression bombs are capped.** Hard limits: 512 MiB total uncompressed,
-32 MiB per entry, 20 000 entries, plus a compression-ratio check on small
-entries.
+**2. Decompression is capped.** 512 MiB for the archive on disk, 32 MiB per
+entry, 20 000 entries, plus a compression-ratio check. There is deliberately
+**no cumulative uncompressed budget**: the per-entry cap and the ratio guard are
+what bound a hostile book.
 
-**3. Scripts cannot run.** Every chapter is sanitised with
+**3. Scripts cannot run.** Every chapter body is sanitised with
 [`ammonia`](https://github.com/rust-ammonia/illuminati) (an allow-list built on
-`html5ever`), applied *last* as the final gate. `<script>`, `<iframe>`,
-`<object>`, `<embed>`, `<form>` and `<noscript>` are dropped along with their
-contents. `on*` handlers are stripped. Links are rewritten from `href` to
-`data-href` so the document contains no live navigation, and external links are
-never followed automatically.
+`html5ever`). `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>` and
+`<noscript>` are dropped along with their contents. `on*` handlers are stripped.
+Links are rewritten from `href` to `data-href` so the document contains no live
+navigation, and external links are never followed automatically.
 
-**4. CSS cannot execute or phone home.** `@import`, `@charset`,
-`expression()`, `-moz-binding`, `behavior`, `javascript:` and `vbscript:` are
-removed, and every `url()` except `data:image/*` becomes `none`. Stylesheet
-content is scrubbed in two independent places so the guarantee does not depend
-on call ordering.
+**4. CSS cannot execute, and cannot escape its element.** `@import`,
+`@charset`, `expression()`, `-moz-binding`, `behavior`, `javascript:` and
+`vbscript:` are removed, and every `url()` except `data:image/*` becomes `none`.
+The stylesheet is then passed through a guard that makes it structurally
+impossible to close its own `<style>` element — without which a book's `.css`
+file could have injected markup into the privileged webview *after* the
+sanitizer ran. A regression test covers this.
 
 **5. Images cannot track you.** Every `<img>` is resolved inside the archive and
 inlined as a `data:` URL under a byte budget. A remote `src` simply fails to
@@ -129,8 +132,12 @@ above up at the engine level.
 **7. The `asset` protocol is disabled**, so no local file can be addressed by
 the webview.
 
-The test suite asserts each of these against a deliberately hostile specimen
-book.
+Known remaining gaps are tracked honestly in [docs/AUDIT.md](docs/AUDIT.md)
+(CSS escape sequences such as `\75 rl(` and `image-set()` are not recognised by
+the scrubber; CSP still blocks the resulting fetch).
+
+Our own code contains no `unsafe` block. The dependency tree does — `zip`,
+`html5ever` and rusqlite's C SQLite all use it.
 
 ---
 
@@ -150,9 +157,13 @@ npm run tauri dev
 
 ### Tests
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml
-npm run build            # tsc --noEmit + vite build
+cargo test --manifest-path src-tauri/Cargo.toml   # dev profile; --release will not link
+npm run build                                      # tsc --noEmit + vite build
 ```
+The Rust suite builds its own hostile specimen EPUB with `zip::ZipWriter`, so it
+never skips and needs no fixture on disk. There are no JavaScript tests yet —
+`reader.ts` is around 900 lines and currently uncovered; that is tracked in
+[docs/AUDIT.md](docs/AUDIT.md) as T-07.
 
 ### Release
 ```bash
@@ -162,29 +173,33 @@ Produces `src-tauri/target/release/epub-reader.exe` and, with bundling
 enabled, NSIS and MSI installers under `src-tauri/target/release/bundle/`.
 
 The release profile uses `lto = true`, `codegen-units = 1`,
-`opt-level = 3` and `strip = true`. A cold build links for roughly 10–15
-minutes on a laptop-class CPU and needs several GB of free RAM while the LTO
-link runs.
+`opt-level = 3`, `strip = true` and **`panic = "abort"`**. The last one matters:
+tests must run in the dev profile, so `cargo test --release` will not link.
+Expect a cold release build to take on the order of ten minutes, and note that
+the LTO link is memory-hungry — it is the slowest and most memory-intensive step
+in the whole project.
 
 **Builds belong in CI.** `.github/workflows/release.yml` runs the typecheck,
 the Rust tests, and the bundle on `windows-latest` for free, and uploads the
 `.exe`, the NSIS installer and the MSI. Push to `main` or tag `v*` to trigger
-it, or use the **Build release** workflow in the Actions tab.
+it, or use the **Build release** workflow in the Actions tab. CI is the
+recommended path: it is faster and more predictable than a local release build,
+and it keeps a few gigabytes of intermediates off your disk.
 
 ### Disk space
 
 `src-tauri/target/` is the only thing that grows, and it is gitignored — no
-build output is ever pushed. A full local debug + release tree reaches about
-6.5 GB, essentially all of it throwaway intermediates:
+build output is ever pushed. A full debug + release tree runs to several
+gigabytes, essentially all of it throwaway intermediates:
 
-| Path | Typical size | Safe to delete? |
+| Path | Approx. size | Safe to delete? |
 | --- | --- | --- |
-| `src-tauri/target/debug` | ~4.2 GB | Yes. Only `cargo test` needs it, and CI runs the tests. |
-| `src-tauri/target/release/deps` | ~1.8 GB | Yes, but the next local build then takes a full cold rebuild. |
-| `src-tauri/target/release/build` | ~480 MB | Yes, same caveat. |
-| `src-tauri/target/release/epub-reader.exe` | 8 MB | No — this is the app. |
-| `src-tauri/target/release/bundle/` | 7 MB | No — the installers. |
-| `node_modules` | ~73 MB | Only if you are not developing. |
+| `src-tauri/target/debug` | 2–5 GB | Yes. Only `cargo test` needs it, and CI runs the tests. |
+| `src-tauri/target/release/deps` | 1–2 GB | Yes, but the next local build then takes a full cold rebuild. |
+| `src-tauri/target/release/build` | ~0.5 GB | Yes, same caveat. |
+| `src-tauri/target/release/epub-reader.exe` | ~8 MB | No — this is the app. |
+| `src-tauri/target/release/bundle/` | ~7 MB | No — the installers. |
+| `node_modules` | ~70 MB | Only if you are not developing. |
 
 Deleting the debug profile is the single biggest win and costs nothing:
 ```powershell
@@ -198,18 +213,23 @@ Remove-Item src-tauri\target\debug -Recurse -Force
 ```
 src/                     frontend (TypeScript, no framework)
   api.ts                 typed wrappers over the Tauri commands
-  library.ts             shelf UI, import, context menus
-  reader.ts              pagination engine, selection, highlights, search
+  library.ts             shelf UI, import, overlays, context menus
+  reader.ts              pagination engine, scroll mode, selection, highlights
   settings.ts            reading preferences sheet
   main.ts                wiring, keyboard map, panels
   styles.css             design tokens and layout
 
 src-tauri/src/
+  lib.rs                 plugin wiring, single instance, shell-open queue
   epub.rs                ZIP → container → OPF/NCX → sanitised chapter
   model.rs               shared types and safety limits
   store.rs               SQLite schema and queries
   commands.rs            the Tauri command surface
-  tests.rs               parser and sanitizer tests
+  tests.rs               parser and sanitizer tests (specimen built in-process)
+src-tauri/nsis/
+  installer.nsh          .epub file association, removed on uninstall
+
+docs/AUDIT.md            known findings, ranked, with fix status
 ```
 
 ### How a chapter is rendered

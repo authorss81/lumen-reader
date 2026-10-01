@@ -52,6 +52,8 @@ private annotations: Annotation[] = [];
   private wheelAccumulator = 0;
   private wheelLocked = false;
   private dragStart: { x: number; y: number } | null = null;
+  /** Annotation ids that could not be located in the current chapter. */
+  private unrendered: number[] = [];
   private saveTimer: number | undefined;
 
   constructor(
@@ -120,10 +122,21 @@ private annotations: Annotation[] = [];
       const start = this.dragStart;
       this.dragStart = null;
       if (!start || !this.book) return;
+
+      // Selecting text is a drag. Selecting a sentence inside one line gives a
+      // large horizontal delta and a tiny vertical one, which is exactly the
+      // gesture this handler used to treat as "turn the page" — so every
+      // ordinary selection yanked the page out from under the user and the rest
+      // of the line appeared to vanish. Never page while a selection exists.
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && selection.toString().trim()) {
+        return;
+      }
+
       const dx = event.clientX - start.x;
       const dy = event.clientY - start.y;
-      // Mostly vertical drags are left to text selection.
-      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy)) return;
+      // Require a decisively horizontal drag, and more travel than before.
+      if (Math.abs(dx) < 120 || Math.abs(dx) < Math.abs(dy) * 2) return;
       if (dx < 0) void this.next();
       else void this.prev();
       this.showChromeTemporarily();
@@ -194,12 +207,19 @@ private relayout() {
 
     if (scrolling) {
       // Continuous vertical reading: no columns, natural document flow, and the
-      // viewport does the scrolling.
+      // viewport does the scrolling. `.epub-content` is `position: relative`
+      // here, so the offsets are zeroed and the margins are expressed as
+      // padding instead. With `box-sizing: border-box` the width is the full
+      // viewport and the padding creates the gutters.
+      style.top = "0px";
+      style.left = "0px";
       style.height = "";
-      style.width = `${width}px`;
+      style.width = `${this.viewport.clientWidth}px`;
       style.columnWidth = "";
       style.columnGap = "";
       style.transform = "";
+      style.padding = `${this.settings.marginY}px ${this.settings.marginX}px`;
+      style.paddingBottom = `${Math.round(this.viewport.clientHeight * 0.5)}px`;
       this.pages = 1;
       this.page = 0;
       this.slider.max = "0";
@@ -207,6 +227,7 @@ private relayout() {
       return;
     }
 
+    style.padding = "0";
     style.height = `${height}px`;
     // `column-width` is only a *suggestion*: with no explicit width the browser
     // widens the single column to fill the container, which desynchronises the
@@ -513,8 +534,9 @@ async goToHref(href: string, locator?: Locator | null) {
       const href = this.book?.chapters[this.chapter]?.href;
       return a.href === href && a.quote.trim().length > 1;
     });
-    for (const note of forChapter) {
-      wrapFirstOccurrence(doc, note.quote, note.color, String(note.id));
+for (const note of forChapter) {
+      const applied = wrapFirstOccurrence(doc, note.quote, note.color, String(note.id));
+      if (!applied) this.unrendered.push(note.id);
     }
   }
 
@@ -575,7 +597,7 @@ async goToHref(href: string, locator?: Locator | null) {
     pop.style.top = `${top < 10 ? rect.bottom + 10 : top}px`;
   }
 
-  private async highlight(color: string, quote: string, withNote = false) {
+private async highlight(color: string, quote: string, withNote = false) {
     if (!this.book) return;
     const href = this.book.chapters[this.chapter]?.href;
     if (!href) return;
@@ -590,10 +612,16 @@ async goToHref(href: string, locator?: Locator | null) {
       });
       this.annotations.push(created);
       this.repaintMarks();
+      const doc = this.content.querySelector<HTMLElement>(".epub-doc");
+      const applied = doc ? wrapFirstOccurrence(doc, quote, color, String(created.id)) : false;
+      if (!applied) {
+        // The quote could not be located in the rendered text. Say so instead of
+        // letting the user conclude that highlighting is broken.
+        this.cb.onNotify(
+          "Saved, but the text could not be located on this page.",
+        );
+      }
       if (withNote) {
-const doc = this.content.querySelector<HTMLElement>(".epub-doc");
-        if (doc) wrapFirstOccurrence(doc, quote, color, String(created.id));
-        this.cb.onNotify("Highlighted — add a note in the notes panel (N)");
         this.cb.onTogglePanel("notes");
       }
     } catch (error) {
@@ -760,12 +788,19 @@ locator(): Locator {
     if (this.chromeTimer) window.clearTimeout(this.chromeTimer);
   }
 
-  nudgeFont(delta: number) {
+nudgeFont(delta: number) {
     this.settings.fontSize = Math.max(
       MIN_SIZE,
       Math.min(MAX_SIZE, this.settings.fontSize + delta),
     );
-    const anchor = this.pages > 1 ? this.page / (this.pages - 1) : 0;
+    // Anchor on whichever position metric the current mode actually uses.
+    // Scroll mode forces `pages = 1`, so the page-index anchor was always 0
+    // and pressing + sent you back to the chapter heading.
+    const anchor = this.settings.scrollMode
+      ? this.scrollFraction()
+      : this.pages > 1
+        ? this.page / (this.pages - 1)
+        : 0;
     this.applySettings();
     void this.afterLayout().then(() => this.goToFraction(anchor));
     this.cb.onNotify(`${this.settings.fontSize}px`);
@@ -815,51 +850,102 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
-/** Wrap the first occurrence of `needle` inside `root` with a <mark>. */
+/**
+ * Wrap the first occurrence of `needle` inside `root` with a `<mark>`.
+ *
+ * Three things this has to get right, all of which were wrong before:
+ *  - a selection usually crosses element boundaries, so the match routinely
+ *    spans several text nodes. Splitting each node it crosses is the only way
+ *    to highlight a phrase containing `<em>` or `<a>`.
+ *  - the selection string has its whitespace collapsed but the DOM does not,
+ *    so both sides have to be normalised or the offsets do not line up.
+ *  - splitting must never lose text: every node is sliced into
+ *    before/mark/after and all three pieces are re-inserted.
+ */
 function wrapFirstOccurrence(
   root: HTMLElement,
   needle: string,
   color: string,
   id: string,
 ): boolean {
-  const target = needle.replace(/\s+/g, " ").trim();
+  const target = normaliseForMatch(needle);
   if (target.length < 2) return false;
 
+  // Flatten to a string plus an index of where each node starts, joining with
+  // a single space so that adjacent nodes do not fuse into false matches.
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
-  let node = walker.nextNode() as Text | null;
-  while (node) {
-    nodes.push(node);
-    node = walker.nextNode() as Text | null;
+  const starts: number[] = [];
+  let probe = walker.nextNode() as Text | null;
+  let flat = "";
+  while (probe) {
+    if (probe.data.length) {
+      starts.push(flat.length);
+      nodes.push(probe);
+      flat += normaliseForMatch(probe.data);
+      // Sentinel: a boundary can never fall inside a run of spaces, so a match
+      // found here is guaranteed to be a real textual match, not a fusion.
+      flat += " ";
+    }
+    probe = walker.nextNode() as Text | null;
   }
-  const joined = nodes.map((n) => n.data).join("");
-  const pos = joined.toLowerCase().indexOf(target.toLowerCase());
+  if (!nodes.length) return false;
+
+  const haystack = flat.toLowerCase();
+  const pos = haystack.indexOf(target.toLowerCase());
   if (pos < 0) return false;
   const end = pos + target.length;
 
-  let cursor = 0;
-  for (const text of nodes) {
-    const start = cursor;
-    const stop = cursor + text.data.length;
-    // Only wrap matches contained in a single text node; a match straddling
-    // nodes is skipped rather than risking a mangled DOM.
-    if (pos >= start && end <= stop) {
-      const local = pos - start;
+  // Map [pos, end) back onto the nodes it covers. A node can contribute a
+  // prefix, the mark, and a suffix, in that order.
+  const owner = (offset: number): number => {
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      if (starts[i] <= offset) return i;
+    }
+    return 0;
+  };
+  const firstNode = owner(pos);
+  const lastNode = owner(end - 1);
+  if (starts[lastNode] + nodes[lastNode].data.length <= end - 1) return false;
+
+  // Walk backwards so mutating the DOM does not disturb the pending indices.
+  for (let i = lastNode; i >= firstNode; i -= 1) {
+    const text = nodes[i];
+    const nodeStart = starts[i];
+    const from = Math.max(0, pos - nodeStart);
+    const to = Math.min(text.data.length, end - nodeStart);
+    if (to <= from && !(i === firstNode && from === 0)) continue;
+
+    const before = text.data.slice(0, from);
+    const marked = text.data.slice(from, to);
+    const after = text.data.slice(to);
+    const parent = text.parentNode;
+    if (!parent) return false;
+
+    const pieces: Node[] = [];
+    if (before) pieces.push(document.createTextNode(before));
+    if (marked) {
       const mark = document.createElement("mark");
       mark.dataset.color = color;
       mark.dataset.id = id;
-      mark.textContent = text.data.slice(local, local + target.length);
-      const tail = document.createTextNode(text.data.slice(local + target.length));
-      const parent = text.parentNode;
-      if (!parent) return false;
-      parent.replaceChild(tail, text);
-      parent.insertBefore(mark, tail);
-      return true;
+      mark.textContent = marked;
+      pieces.push(mark);
     }
-    cursor = stop;
-    if (cursor > pos) break;
+    if (after) pieces.push(document.createTextNode(after));
+
+    parent.replaceChild(pieces[0], text);
+    let anchor: Node = pieces[0];
+    for (let k = 1; k < pieces.length; k += 1) {
+      parent.insertBefore(pieces[k], anchor.nextSibling);
+      anchor = pieces[k];
+    }
   }
-  return false;
+  return true;
+}
+
+/** Collapse every run of whitespace to one space, the way the DOM shows text. */
+function normaliseForMatch(value: string): string {
+  return value.replace(/\s+/g, " ");
 }
 export function parseLocator(raw: string): Locator | null {
   if (!raw) return null;
