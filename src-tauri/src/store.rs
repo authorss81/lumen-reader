@@ -349,6 +349,12 @@ impl Store {
         Ok(())
     }
 
+    pub fn rename_bookmark(&self, id: i64, label: &str) -> SqlResult<()> {
+        self.conn
+            .execute("UPDATE bookmarks SET label = ?2 WHERE id = ?1", params![id, label])?;
+        Ok(())
+    }
+
     pub fn list_bookmarks(&self, book_id: &str) -> SqlResult<Vec<Bookmark>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, book_id, href, locator, label, created_at

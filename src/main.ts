@@ -1,6 +1,6 @@
 import { api, el, formatDate, type BookMeta } from "./api";
 import { closeOverlays, Library } from "./library";
-import { Reader, excerptHtml, flatToc, type PanelMode } from "./reader";
+import { Reader, excerptHtml, flatToc, parseLocator, type PanelMode } from "./reader";
 import {
   applyTheme,
   loadSettings,
@@ -273,7 +273,7 @@ async function renderBookmarks() {
   body.replaceChildren();
   if (!all.length) {
     body.appendChild(
-      el("p", "panel-empty", "No bookmarks yet. Press B to add one."),
+      el("p", "panel-empty", "No bookmarks yet. Press B to bookmark this page."),
     );
     return;
   }
@@ -281,20 +281,64 @@ async function renderBookmarks() {
     body.appendChild(el("p", "panel-empty", `No bookmark matches “${panelFilter}”.`));
     return;
   }
+
+  const current = reader.currentBookmark();
+  const chapterTitle = (href: string) => {
+    const detail = reader.getToc();
+    const flat = flatToc(detail);
+    const match = flat.find((n) => n.href.split("#")[0] === href);
+    return match?.title ?? href.split("/").pop() ?? href;
+  };
+
   for (const mark of list) {
     const row = el("div", "list-row");
+    if (current && current.id === mark.id) row.classList.add("is-current");
     const main = el("div", "list-row-main");
-    main.appendChild(el("div", "list-row-title", mark.label || mark.href));
-    main.appendChild(
-      el("div", "list-row-sub", `${formatDate(mark.created_at)} · ${mark.href.split("/").pop() ?? ""}`),
+
+    const title = document.createElement("div");
+    title.className = "list-row-title";
+    title.textContent = mark.label;
+    title.title = "Double-click to rename";
+    title.addEventListener("dblclick", async () => {
+      const next = prompt("Rename bookmark", mark.label);
+      if (next === null) return;
+      await reader.renameBookmark(mark, next);
+      await renderBookmarks();
+    });
+
+    // Show where in the book this bookmark sits, not just the date.
+    const saved = parseLocator(mark.locator);
+    const position = saved?.page
+      ? `page ${saved.page + 1}`
+      : saved?.fraction
+        ? `${Math.round(saved.fraction * 100)}% in`
+        : "chapter start";
+
+    main.append(
+      title,
+      el(
+        "div",
+        "list-row-sub",
+        `${chapterTitle(mark.href)} · ${position} · ${formatDate(mark.created_at)}`,
+      ),
     );
+
     const actions = el("div", "list-row-actions");
     const jump = el("button", "icon-btn");
     jump.title = "Go to bookmark";
     jump.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
     jump.addEventListener("click", async () => {
-      await reader.goToHref(mark.href);
+      await reader.goToBookmark(mark);
       closePanel();
+    });
+    const rename = el("button", "icon-btn");
+    rename.title = "Rename";
+    rename.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>';
+    rename.addEventListener("click", async () => {
+      const next = prompt("Rename bookmark", mark.label);
+      if (next === null) return;
+      await reader.renameBookmark(mark, next);
+      await renderBookmarks();
     });
     const remove = el("button", "icon-btn");
     remove.title = "Delete";
@@ -303,11 +347,11 @@ async function renderBookmarks() {
       await api.deleteBookmark(mark.id);
       await renderBookmarks();
     });
-    actions.append(jump, remove);
+    actions.append(jump, rename, remove);
     row.append(main, actions);
     row.addEventListener("click", (event) => {
       if ((event.target as HTMLElement).closest("button")) return;
-      void reader.goToHref(mark.href).then(closePanel);
+      void reader.goToBookmark(mark).then(closePanel);
     });
     body.appendChild(row);
   }

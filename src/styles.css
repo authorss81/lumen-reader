@@ -565,6 +565,23 @@ select.select {
 .epub-content.no-anim {
   transition: none;
 }
+/* Scroll mode: hand the viewport back to the browser and drop the page zones. */
+.epub-viewport.is-scrolling {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+.epub-viewport.is-scrolling .epub-content {
+  position: relative;
+  top: 0 !important;
+  left: 0 !important;
+  height: auto !important;
+  padding-bottom: 40vh;
+}
+.chrome-left.is-scrolling {
+  opacity: 0;
+  pointer-events: none;
+}
 .epub-doc {
   font-family: var(--reader-font);
   font-size: var(--reader-size, 19px);
@@ -747,6 +764,10 @@ html[data-theme="black"] .epub-doc .hl {
 .zone-next {
   right: 0;
   cursor: e-resize;
+}
+/* In scroll mode the wheel does the navigating, so the click zones step aside. */
+.reader:has(.epub-viewport.is-scrolling) .zone {
+  display: none !important;
 }
 
 .chrome {
@@ -972,6 +993,12 @@ html[data-theme="black"] .epub-doc .hl {
 }
 .list-row:hover .list-row-actions {
   opacity: 1;
+}
+.list-row.is-current {
+  background: var(--accent-soft);
+}
+.list-row.is-current .list-row-title {
+  color: var(--accent);
 }
 .list-row-actions .icon-btn {
   width: 26px;

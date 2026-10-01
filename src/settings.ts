@@ -3,10 +3,13 @@ import type { ReaderSettings } from "./reader";
 
 export interface AppSettings extends ReaderSettings {
   theme: "light" | "sepia" | "dark" | "black";
+  /** Follow the Windows light/dark preference instead of a fixed theme. */
+  followSystemTheme: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "light",
+  followSystemTheme: false,
   fontSize: 19,
   lineHeight: 1.62,
   letterSpacing: 0,
@@ -14,6 +17,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   marginY: 48,
   fontFamily: "serif",
   justify: false,
+  scrollMode: false,
 };
 
 const THEMES: { id: AppSettings["theme"]; label: string; preview: [string, string] }[] = [
@@ -34,6 +38,20 @@ export async function loadSettings(): Promise<AppSettings> {
 
 export function applyTheme(theme: string) {
   document.documentElement.dataset.theme = theme;
+}
+
+/** Resolve the effective theme, optionally following the Windows preference. */
+export function effectiveTheme(settings: AppSettings): string {
+  if (!settings.followSystemTheme) return settings.theme;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+/** Keep following the OS when the user has asked us to. */
+export function watchSystemTheme(settings: AppSettings, onChange: (theme: string) => void) {
+  if (!settings.followSystemTheme || !window.matchMedia) return;
+  const query = window.matchMedia("(prefers-color-scheme: dark)");
+  const handler = () => onChange(effectiveTheme(settings));
+  query.addEventListener("change", handler);
 }
 
 /**
@@ -61,17 +79,49 @@ export function openSettingsSheet(
   sheet.append(head, body);
 
   const persist = () => {
-    applyTheme(settings.theme);
-    void api.setSetting("theme", settings.theme);
-    void api.setSetting("fontSize", settings.fontSize);
-    void api.setSetting("lineHeight", settings.lineHeight);
-    void api.setSetting("letterSpacing", settings.letterSpacing);
-    void api.setSetting("marginX", settings.marginX);
-    void api.setSetting("marginY", settings.marginY);
-    void api.setSetting("fontFamily", settings.fontFamily);
-    void api.setSetting("justify", settings.justify);
+    applyTheme(effectiveTheme(settings));
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
+      void api.setSetting(key, settings[key]);
+    }
     onChange({ ...settings });
   };
+
+  // ---- layout: paged vs scrolling
+  body.appendChild(
+    field("Reading style", () =>
+      segment(
+        [
+          { id: "paged", label: "Paginated" },
+          { id: "scroll", label: "Continuous scroll" },
+        ],
+        settings.scrollMode ? "scroll" : "paged",
+        (id) => {
+          settings.scrollMode = id === "scroll";
+          persist();
+        },
+        true,
+      ),
+    ),
+  );
+
+  body.appendChild(
+    field("Theme source", () =>
+      segment(
+        [
+          { id: "manual", label: "Pick a theme" },
+          { id: "system", label: "Match Windows" },
+        ],
+        settings.followSystemTheme ? "system" : "manual",
+        (id) => {
+          settings.followSystemTheme = id === "system";
+          persist();
+          sheet.remove();
+          openSettingsSheet(settings, onChange);
+        },
+        true,
+      ),
+    ),
+  );
 
   // ---- theme
   body.appendChild(
@@ -182,19 +232,19 @@ export function openSettingsSheet(
     ),
   );
 
-  const reset = el("button", "btn", "Reset to defaults");
+const reset = el("button", "btn", "Reset to defaults");
   reset.type = "button";
   reset.style.width = "100%";
   reset.style.marginTop = "6px";
   reset.addEventListener("click", () => {
     Object.assign(settings, DEFAULT_SETTINGS);
     sheet.remove();
-    applyTheme(settings.theme);
-    onChange({ ...settings });
-    void api.setSetting("theme", settings.theme);
+    document.querySelector(".scrim")?.remove();
+    applyTheme(effectiveTheme(settings));
     for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
       void api.setSetting(key, settings[key]);
     }
+    onChange({ ...settings });
   });
   body.appendChild(reset);
 

@@ -435,6 +435,15 @@ pub fn delete_bookmark(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
     state.store().delete_bookmark(id).map_err(err)
 }
 
+#[tauri::command]
+pub fn rename_bookmark(state: State<'_, AppState>, id: i64, label: String) -> CmdResult<()> {
+    let label = label.trim().to_string();
+    if label.is_empty() {
+        return Err("a bookmark needs a label".into());
+    }
+    state.store().rename_bookmark(id, &label).map_err(err)
+}
+
 // ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------

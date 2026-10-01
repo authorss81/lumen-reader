@@ -29,27 +29,39 @@ There is not a single `unsafe` block in this codebase.
 ## Features
 
 **Library**
-- Import via file picker or drag-and-drop onto the window
+- Import via file picker, drag-and-drop onto the window, or by double-clicking
+  any `.epub` in Explorer — installing the app registers it as the default
+  handler for the format
 - Covers decoded on demand and cached in memory
 - Filter by title/author/publisher, sort by recent, added, title, author, progress
 - Per-book context menu: edit metadata, show in Explorer, remove (files are never deleted)
 
 **Reading**
-- True pagination via CSS multi-column layout — one screen, no scrollbar
+- Two reading styles: **paginated** (CSS multi-column, one screen, no scrollbar)
+  or **continuous scroll** for people who prefer a normal document flow
+- Mouse wheel and click-drag page in paginated mode, with a threshold so a
+  trackpad flick turns exactly one page
 - Navigation via click zones, keyboard, slider, or full table of contents
 - Cross-document and `#fragment` links, external links routed through an explicit menu
-- Four themes (Light, Sepia, Dark, Black), three typefaces, adjustable size,
-  line height, letter spacing, justification and margins
+- Four themes (Light, Sepia, Dark, Black), optional **match Windows** light/dark
+  preference, three typefaces, adjustable size, line height, letter spacing,
+  justification and margins
 - Fullscreen (`F`), page slider, percentage + page counter
 
-**Notes and metadata**
+**Notes and bookmarks**
 - Select text to highlight in four colours, with optional note
-- Bookmarks (`B`) — toggle, jump, delete
+- Bookmarks (`B`) capture the **exact page**, not just the chapter, and are
+  labelled with the first line of text on that page
+- Rename any bookmark (double-click or the pencil button), jump to it from
+  anywhere, and delete it
+- The bookmark list shows chapter, page number and date, and marks which
+  bookmark matches where you are reading right now
 - Per-book progress saved automatically, resumes exactly where you left off
 
 **Search**
 - Full-text across the entire spine, results with highlighted excerpts and
   click-to-jump
+- The side panel's filter box narrows the contents list, bookmarks and notes
 
 ### Keyboard shortcuts
 
@@ -63,6 +75,18 @@ There is not a single `unsafe` block in this codebase.
 | `F` | Fullscreen |
 | `+` `-` | Font size |
 | `Esc` | Close panel, or return to the library |
+
+---
+
+## Windows integration
+
+- Registers `.epub` as the default handler on install (per-user, no elevation)
+  and removes every key it created on uninstall
+- Single-instance: launching a second book raises the existing window and opens
+  it there, instead of starting a second copy
+- Native window frame, own icon, Start menu entry, own taskbar button
+- `withGlobalTauri` is off, so no dev globals are injected into the webview
+- Nothing is phoned home: the app makes zero network requests
 
 ---
 

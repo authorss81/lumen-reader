@@ -137,6 +137,8 @@ export const api = {
   addBookmark: (bookId: string, href: string, locator: string, label: string) =>
     invoke<Bookmark>("add_bookmark", { bookId, href, locator, label }),
   deleteBookmark: (id: number) => invoke<void>("delete_bookmark", { id }),
+  renameBookmark: (id: number, label: string) =>
+    invoke<void>("rename_bookmark", { id, label }),
 
   getSettings: () => invoke<Record<string, unknown>>("get_settings"),
   setSetting: (key: string, value: unknown) =>

@@ -25,6 +25,8 @@ export interface ReaderSettings {
   fontFamily: "serif" | "sans" | "mono";
   justify: boolean;
   letterSpacing: number;
+  /** false = paginated columns, true = continuous vertical scrolling. */
+  scrollMode: boolean;
 }
 
 export interface ReaderCallbacks {
@@ -43,11 +45,14 @@ export class Reader {
   private page = 0;
   private pages = 1;
   private loading = false;
-  private saveTimer: number | undefined;
-  private annotations: Annotation[] = [];
+private annotations: Annotation[] = [];
   private bookmarks: Bookmark[] = [];
   private chromeTimer: number | undefined;
   private resizeTimer: number | undefined;
+  private wheelAccumulator = 0;
+  private wheelLocked = false;
+  private dragStart: { x: number; y: number } | null = null;
+  private saveTimer: number | undefined;
 
   constructor(
     private viewport: HTMLElement,
@@ -69,7 +74,60 @@ export class Reader {
     observer.observe(this.viewport);
     window.addEventListener("resize", () => this.scheduleRelayout());
 
+    this.bindWheel();
+    this.bindDragPaging();
     this.bindTextSelection();
+  }
+
+  /* ------------------------------------------------- wheel and drag paging */
+
+  /**
+   * In paginated mode the wheel turns pages. A trackpad emits a long stream of
+   * small deltas, so accumulate them and only flip once per threshold, with a
+   * short lockout to stop one flick from running away through the book.
+   */
+  private bindWheel() {
+    this.viewport.addEventListener(
+      "wheel",
+      (event) => {
+        if (this.settings.scrollMode || !this.book) return;
+        event.preventDefault();
+        if (this.wheelLocked) return;
+        const dominant = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        this.wheelAccumulator += dominant;
+        const threshold = event.deltaMode === 1 ? 3 : 110;
+        if (Math.abs(this.wheelAccumulator) < threshold) return;
+        const forward = this.wheelAccumulator > 0;
+        this.wheelAccumulator = 0;
+        this.wheelLocked = true;
+        window.setTimeout(() => (this.wheelLocked = false), 180);
+        if (forward) void this.next();
+        else void this.prev();
+        this.showChromeTemporarily();
+      },
+      { passive: false },
+    );
+  }
+
+  /** Click-and-drag past a threshold pages forward or back. */
+  private bindDragPaging() {
+    this.viewport.addEventListener("pointerdown", (event) => {
+      if (this.settings.scrollMode) return;
+      if (event.button !== 0) return;
+      this.dragStart = { x: event.clientX, y: event.clientY };
+    });
+    this.viewport.addEventListener("pointerup", (event) => {
+      const start = this.dragStart;
+      this.dragStart = null;
+      if (!start || !this.book) return;
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      // Mostly vertical drags are left to text selection.
+      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy)) return;
+      if (dx < 0) void this.next();
+      else void this.prev();
+      this.showChromeTemporarily();
+    });
   }
 
   /* ------------------------------------------------------------ settings */
@@ -126,8 +184,29 @@ private relayout() {
     if (!this.book) return;
     const { width, height } = this.metrics();
     const style = this.content.style;
+    const scrolling = this.settings.scrollMode;
+
+    this.viewport.classList.toggle("is-scrolling", scrolling);
+    this.slider.hidden = scrolling;
+    this.slider.parentElement?.classList.toggle("is-scrolling", scrolling);
     style.top = `${this.settings.marginY}px`;
     style.left = `${this.settings.marginX}px`;
+
+    if (scrolling) {
+      // Continuous vertical reading: no columns, natural document flow, and the
+      // viewport does the scrolling.
+      style.height = "";
+      style.width = `${width}px`;
+      style.columnWidth = "";
+      style.columnGap = "";
+      style.transform = "";
+      this.pages = 1;
+      this.page = 0;
+      this.slider.max = "0";
+      this.paint();
+      return;
+    }
+
     style.height = `${height}px`;
     // `column-width` is only a *suggestion*: with no explicit width the browser
     // widens the single column to fill the container, which desynchronises the
@@ -144,7 +223,8 @@ private relayout() {
     this.resizeTimer = window.setTimeout(() => this.relayout(), 120);
   }
 
-  private measure() {
+private measure() {
+    if (this.settings.scrollMode) return;
     const { width, gap } = this.metrics();
     const step = width + gap;
     // scrollWidth spans every laid-out column; divide to get the page count.
@@ -156,6 +236,15 @@ private relayout() {
   }
 
   private paint() {
+    if (this.settings.scrollMode) {
+      const scroller = this.viewport;
+      const max = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+      const pct = Math.round((scroller.scrollTop / max) * 100);
+      this.pageLabel.textContent = `${pct}%`;
+      this.scheduleSave();
+      this.updateSubLabel();
+      return;
+    }
     const { width, gap } = this.metrics();
     this.content.style.transform = `translate3d(${-this.page * (width + gap)}px,0,0)`;
     this.slider.value = String(this.page);
@@ -183,10 +272,21 @@ private relayout() {
   }
 
   overallProgress(): number {
-    if (!this.book) return 0;
+if (!this.book) return 0;
     const total = Math.max(1, this.book.chapters.length);
-    const within = this.pages > 1 ? this.page / this.pages : 0;
+    const within = this.settings.scrollMode
+      ? this.scrollFraction()
+      : this.pages > 1
+        ? this.page / (this.pages - 1)
+        : 0;
     return Math.min(1, (this.chapter + within) / total);
+  }
+
+  /** How far down the current chapter we are, 0 - 1. */
+  private scrollFraction(): number {
+    const max = this.viewport.scrollHeight - this.viewport.clientHeight;
+    if (max <= 0) return 0;
+    return Math.max(0, Math.min(1, this.viewport.scrollTop / max));
   }
 
   /* ----------------------------------------------------------- navigation */
@@ -204,11 +304,25 @@ private relayout() {
   }
 
   private goToFraction(fraction: number) {
+    if (this.settings.scrollMode) {
+      const max = this.viewport.scrollHeight - this.viewport.clientHeight;
+      this.viewport.scrollTop = Math.max(0, Math.min(max, fraction * max));
+      this.paint();
+      return;
+    }
     this.goToPage(Math.floor(fraction * (this.pages - 1)), false);
   }
 
   async next(): Promise<void> {
-    if (this.page + 1 < this.pages) {
+    if (this.settings.scrollMode) {
+      const step = this.viewport.clientHeight * 0.9;
+      const target = this.viewport.scrollTop + step;
+      const max = this.viewport.scrollHeight - this.viewport.clientHeight;
+      if (target < max - 4) {
+        this.viewport.scrollTo({ top: target, behavior: "smooth" });
+        return;
+      }
+    } else if (this.page + 1 < this.pages) {
       this.goToPage(this.page + 1);
       return;
     }
@@ -221,14 +335,26 @@ private relayout() {
   }
 
   async prev(): Promise<void> {
-    if (this.page > 0) {
+    if (this.settings.scrollMode) {
+      const step = this.viewport.clientHeight * 0.9;
+      const target = this.viewport.scrollTop - step;
+      if (target > 4) {
+        this.viewport.scrollTo({ top: target, behavior: "smooth" });
+        return;
+      }
+    } else if (this.page > 0) {
       this.goToPage(this.page - 1);
       return;
     }
     if (this.chapter > 0) {
       const target = this.chapter - 1;
       await this.loadChapter(target);
-      this.goToPage(this.pages - 1, false);
+      if (this.settings.scrollMode) {
+        this.viewport.scrollTop = this.viewport.scrollHeight;
+        this.paint();
+      } else {
+        this.goToPage(this.pages - 1, false);
+      }
     }
   }
 
@@ -270,7 +396,8 @@ private relayout() {
       await this.afterLayout();
     }
 
-    this.goToPage(0, false);
+this.goToPage(0, false);
+    if (this.settings.scrollMode) this.viewport.scrollTop = 0;
     this.loading = false;
   }
 
@@ -345,16 +472,37 @@ if (!node) return;
     this.goToPage(page, false);
   }
 
-  async goToHref(href: string) {
+async goToHref(href: string, locator?: Locator | null) {
     if (!this.book) return;
     const [path, fragment] = splitOnce(href, "#");
     const index = this.book.chapters.findIndex((c) => c.href === path);
     if (index < 0) return;
     if (index === this.chapter) {
       if (fragment) this.jumpToFragment(fragment);
+      if (locator) this.restoreLocator(locator);
       return;
     }
     await this.loadChapter(index, fragment);
+    // A bookmark stores the exact position inside the chapter, so a jump has to
+    // land on the same page rather than the top of the chapter.
+    if (locator) this.restoreLocator(locator);
+  }
+
+  /** Put the reader back on a saved chapter/page/fraction. */
+  private restoreLocator(locator: Locator) {
+    if (locator.chapter !== this.chapter) return;
+    if (this.settings.scrollMode) {
+      this.goToFraction(locator.fraction ?? 0);
+      return;
+    }
+    if (locator.page) this.goToPage(locator.page, false);
+    else if (locator.fraction) this.goToFraction(locator.fraction);
+  }
+
+  /** Jump to a saved bookmark. */
+  async goToBookmark(mark: Bookmark) {
+    const parsed = parseLocator(mark.locator);
+    await this.goToHref(mark.href, parsed);
   }
 
   /* ---------------------------------------------------------- highlights */
@@ -493,7 +641,33 @@ const doc = this.content.querySelector<HTMLElement>(".epub-doc");
     return this.book?.page_list ?? [];
   }
 
-  /* ------------------------------------------------------------ bookmarks */
+/* ------------------------------------------------------------ bookmarks */
+
+  /**
+   * Capture the first line of visible text on the current page so the bookmark
+   * list shows something recognisable instead of a bare chapter name.
+   */
+  private visibleExcerpt(): string {
+    const { width, gap } = this.metrics();
+    const left = this.page * (width + gap);
+    const top = this.settings.marginY;
+    const right = left + width;
+    const bottom = top + this.viewport.clientHeight - this.settings.marginY;
+    const doc = this.content.querySelector<HTMLElement>(".epub-doc");
+    if (!doc) return "";
+    for (const node of doc.querySelectorAll<HTMLElement>("p, h1, h2, h3, h4, li, blockquote")) {
+      const rect = node.getBoundingClientRect();
+      const base = this.content.getBoundingClientRect();
+      const x = rect.left - base.left;
+      const y = rect.top - base.top;
+      // Any vertical overlap with the visible band counts.
+      if (y + rect.height < top || y > bottom) continue;
+      if (x + rect.width < left || x > right) continue;
+      const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text.length > 1) return text.slice(0, 120);
+    }
+    return "";
+  }
 
   async toggleBookmark() {
     if (!this.book) return;
@@ -508,16 +682,30 @@ const doc = this.content.querySelector<HTMLElement>(".epub-doc");
       this.bookmarks = this.bookmarks.filter((b) => b.id !== existing.id);
       this.cb.onNotify("Bookmark removed");
     } else {
-      const created = await api.addBookmark(
-        this.book.id,
-        href,
-        locator,
-        this.chapterLabel(),
-      );
+      const label = this.visibleExcerpt() || this.chapterLabel();
+      const created = await api.addBookmark(this.book.id, href, locator, label);
       this.bookmarks.unshift(created);
       this.cb.onNotify("Bookmark added");
     }
     this.cb.onBookChange();
+  }
+
+  async renameBookmark(mark: Bookmark, label: string) {
+    const trimmed = label.trim();
+    if (!trimmed || trimmed === mark.label) return;
+    mark.label = trimmed;
+    // The label is stored in the annotation-adjacent table; reuse the notes
+    // command surface by rewriting through a dedicated call below.
+    await api.renameBookmark(mark.id, trimmed);
+    this.cb.onNotify("Bookmark renamed");
+  }
+
+  /** The bookmark matching the current position, if any. */
+  currentBookmark(): Bookmark | null {
+    const href = this.book?.chapters[this.chapter]?.href;
+    if (!href) return null;
+    const locator = JSON.stringify(this.locator());
+    return this.bookmarks.find((b) => b.href === href && b.locator === locator) ?? null;
   }
 
   private chapterLabel(): string {
@@ -528,11 +716,15 @@ const doc = this.content.querySelector<HTMLElement>(".epub-doc");
 
   /* ---------------------------------------------------------------- save */
 
-  locator(): Locator {
+locator(): Locator {
     return {
       chapter: this.chapter,
-      page: this.page,
-      fraction: this.pages > 1 ? this.page / (this.pages - 1) : 0,
+      page: this.settings.scrollMode ? 0 : this.page,
+      fraction: this.settings.scrollMode
+        ? this.scrollFraction()
+        : this.pages > 1
+          ? this.page / (this.pages - 1)
+          : 0,
     };
   }
 
