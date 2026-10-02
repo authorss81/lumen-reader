@@ -1655,23 +1655,6 @@ fn sanitize_html(html: &str) -> String {
             if attribute.starts_with("on") || attribute.eq_ignore_ascii_case("srcdoc") {
                 return None;
             }
-            // `xlink:href` is on the generic allow-list, so ammonia does not
-            // treat it as a URL attribute and never applies url_schemes to it.
-            // That left `<a xlink:href="data:text/html,…">` untouched, because
-            // data is an allowed scheme. Legitimate uses are rewritten to
-            // inline data: images before they get here, so admit nothing but
-            // an image or font payload.
-            if attribute.eq_ignore_ascii_case("xlink:href") {
-                let lowered = value.to_ascii_lowercase();
-                let inline = lowered.starts_with("data:image/")
-                    || lowered.starts_with("data:font/")
-                    || lowered.starts_with("data:application/font");
-                return if inline {
-                    Some(std::borrow::Cow::Borrowed(value))
-                } else {
-                    None
-                };
-            }
             let _ = element;
             Some(std::borrow::Cow::Borrowed(value))
         })
@@ -1681,7 +1664,49 @@ fn sanitize_html(html: &str) -> String {
                 .collect(),
         );
 
-    builder.clean(html).to_string()
+    let cleaned = builder.clean(html).to_string();
+    strip_foreign_xlink_href(&cleaned)
+}
+
+/// Does this `data:` URL carry an image or a font, and nothing else?
+fn is_inline_data_asset(value: &str) -> bool {
+    let lowered = value.trim().to_ascii_lowercase();
+    lowered.starts_with("data:image/")
+        || lowered.starts_with("data:font/")
+        || lowered.starts_with("data:application/font")
+}
+
+/// Remove any `xlink:href` that is not an inline image or font.
+///
+/// This has to be a pass over the serialised output rather than an
+/// `attribute_filter` entry. Inside `<svg>` the HTML parser applies the foreign
+/// content adjustments and moves `xlink:href` into the XLink namespace, so the
+/// filter is handed the bare local name `href` and never sees the qualified
+/// name. Ammonia also does not classify that attribute as a URL attribute, so
+/// `url_schemes` never applies to it and `data:text/html,…` survived intact -
+/// a live link to a script-bearing document, in a book, clickable.
+///
+/// Legitimate references are rewritten to inline `data:` assets before
+/// sanitising, so nothing real is lost here.
+fn strip_foreign_xlink_href(html: &str) -> String {
+    fn re_dq() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| Regex::new(r#"(?is)\s+xlink:href\s*=\s*"([^"]*)""#).unwrap())
+    }
+    fn re_sq() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| Regex::new(r"(?is)\s+xlink:href\s*=\s*'([^']*)'").unwrap())
+    }
+    let drop = |caps: &regex::Captures<'_>| -> String {
+        let value = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        if is_inline_data_asset(value) {
+            caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+        } else {
+            String::new()
+        }
+    };
+    let once = re_dq().replace_all(html, drop).into_owned();
+    re_sq().replace_all(&once, drop).into_owned()
 }
 
 /// Thin wrappers so the sanitizer, the style guard, the decoder and the excerpt

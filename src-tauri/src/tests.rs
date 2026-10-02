@@ -577,18 +577,35 @@ fn css_escape_decoder_terminates_correctly() {
 
 #[test]
 fn svg_anchor_cannot_smuggle_a_data_url() {
-    // xlink:href is on the generic attribute allow-list, so an SVG anchor
-    // could otherwise carry a data: document past the url() gate.
+    // xlink:href is on the generic allow-list and, inside <svg>, the HTML
+    // parser moves it into the XLink namespace, so ammonia never treats it as a
+    // URL attribute. A data: document therefore passed the scheme gate intact.
     let out = crate::epub::sanitize_html_for_test(
         r#"<svg xmlns:xlink="http://www.w3.org/1999/xlink"><a xlink:href="data:text/html,<script>alert(1)</script>">x</a></svg>"#,
     );
     assert!(!out.contains("xlink:href"), "xlink:href survived: {out}");
 
-    // And it is still treated as a real link when it points somewhere sane.
-    let ok = crate::epub::sanitize_html_for_test(
+    // Also with the namespace declared and a script-free but live payload.
+    let plain = crate::epub::sanitize_html_for_test(
+        r#"<svg xmlns:xlink="http://www.w3.org/1999/xlink"><a xlink:href='data:image/svg+xml,<svg/>'>x</a></svg>"#,
+    );
+    assert!(
+        !plain.contains("data:image/svg+xml"),
+        "non-raster data URL survived: {plain}"
+    );
+
+    // A relative reference cannot be honoured here: the document has already
+    // been made self-contained, and loading one would need the network.
+    let relative = crate::epub::sanitize_html_for_test(
         r#"<svg><a xlink:href="chap2.xhtml">next</a></svg>"#,
     );
-    assert!(ok.contains("chap2.xhtml"), "svg link was dropped: {ok}");
+    assert!(!relative.contains("chap2.xhtml"), "relative link survived: {relative}");
+
+    // Inline raster artwork, which is the only legitimate use, is preserved.
+    let art = crate::epub::sanitize_html_for_test(
+        r#"<svg><image xlink:href="data:image/png;base64,AAAA"/></svg>"#,
+    );
+    assert!(art.contains("data:image/png;base64"), "inline art was dropped: {art}");
 }
 
 /// Build a book whose container lists a rootfile that does not exist and one
@@ -705,19 +722,27 @@ fn non_linear_spine_items_are_skipped_when_stepping_through_the_book() {
         .find(|c| !c.linear)
         .expect("non-linear item");
     assert!(note.href.ends_with("note.xhtml"));
-    // But reading straight through skips it.
-    assert_eq!(epub.next_linear(0), Some(1), "footnote follows chapter two");
-    assert_eq!(epub.next_linear(1), Some(2));
-    assert_eq!(epub.next_linear(2), None, "nothing linear after the footnote");
+    // But reading straight through skips it. next_linear_from is "the first
+    // linear chapter at or after this index", so callers pass index + 1.
+    assert_eq!(epub.next_linear(0), Some(0), "chapter one is itself linear");
+    assert_eq!(epub.next_linear(1), Some(1), "chapter two follows");
+    assert_eq!(
+        epub.next_linear(2),
+        None,
+        "only the footnote is left, and it is non-linear"
+    );
     assert_eq!(epub.prev_linear(2), Some(1));
     assert_eq!(epub.prev_linear(1), Some(0));
     assert_eq!(epub.prev_linear(0), None);
-    // The flags the webview uses must agree.
+    // The flags the webview uses must agree: the linear flow really does end
+    // at chapter two, so the footnote being last must not be what ends it.
     let second = epub.chapter(1).expect("chapter two");
-    assert!(second.has_next, "should offer the next linear chapter");
-    assert!(!second.is_last);
+    assert!(second.is_last, "the trailing footnote must not extend the flow");
+    assert!(!second.has_next);
+    assert!(second.has_prev);
     let last = epub.chapter(2).expect("footnote");
-    assert!(last.is_last, "the trailing footnote ends the linear flow");
+    assert!(last.is_last);
+    assert!(!last.has_next, "nothing linear follows the footnote");
 }
 
 #[test]
