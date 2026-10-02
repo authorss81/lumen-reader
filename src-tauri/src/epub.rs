@@ -250,14 +250,13 @@ fn capture_quoted(haystack: &str, name: &str) -> Option<String> {
     while let Some(rel) = haystack[from..].find(name) {
         let start = from + rel + name.len();
         let rest = &haystack[start..];
-        let trimmed = rest.trim_start();
-        let mut quote = trimmed.chars();
-        match quote.next() {
-            Some(q @ ('"' | '\'')) => {
-                let value: String = trimmed[1..].chars().take_while(|c| *c != q).collect();
-                return Some(value);
-            }
-            _ => {}
+        // The `=` is optional: `encoding="..."` has one, `<meta charset>` does
+        // not, and the previous version only accepted the no-`=` form - so
+        // Latin-1 books silently fell through to UTF-8.
+        let trimmed = rest.trim_start().trim_start_matches('=').trim_start();
+        if let Some(q @ ('"' | '\'')) = trimmed.chars().next() {
+            let value: String = trimmed[1..].chars().take_while(|c| *c != q).collect();
+            return Some(value);
         }
         from = start;
     }

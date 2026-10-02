@@ -8,6 +8,7 @@
 //! clone and not in CI. There is no external fixture and no skip.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use zip::write::SimpleFileOptions;
@@ -322,9 +323,18 @@ fn png() -> Vec<u8> {
         .expect("png")
 }
 
+/// Each build gets its own file. Cargo runs tests in parallel, and a shared
+/// path meant one test truncated the archive another was mid-way through
+/// reading - which is how this suite failed on its first CI run.
+fn unique_path(stem: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("lumen-{stem}-{}-{n}.epub", std::process::id()))
+}
+
 /// Build the specimen EPUB in a temp directory and return its path.
 fn build_specimen() -> PathBuf {
-    let path = std::env::temp_dir().join("lumen-test-specimen.epub");
+    let path = unique_path("specimen");
     let file = std::fs::File::create(&path).expect("create specimen");
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default()
@@ -481,7 +491,7 @@ fn metadata_keeps_text_across_inline_tags() {
 }
 
 fn build_specimen_with_opf(opf: &str) -> PathBuf {
-    let path = std::env::temp_dir().join("lumen-test-specimen-inline.epub");
+    let path = unique_path("inline");
     let file = std::fs::File::create(&path).expect("create");
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default()
@@ -506,14 +516,14 @@ fn build_specimen_with_opf(opf: &str) -> PathBuf {
 
 #[test]
 fn rejects_non_epub_input() {
-    let junk = std::env::temp_dir().join("lumen-not-a-book.epub");
+    let junk = unique_path("junk");
     std::fs::write(&junk, b"this is definitely not a zip file").unwrap();
     assert!(Epub::open(&junk).is_err());
 }
 
 #[test]
 fn rejects_an_empty_file() {
-    let empty = std::env::temp_dir().join("lumen-empty.epub");
+    let empty = unique_path("empty");
     std::fs::write(&empty, b"").unwrap();
     assert!(Epub::open(&empty).is_err());
 }
