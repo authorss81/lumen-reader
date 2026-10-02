@@ -263,34 +263,36 @@ A single `#toast` node means N failures show exactly one.
 
 ## Part 6 — Visual design
 
-### D-01 · Contrast — **OPEN**
+**All items in this part are now fixed.** See the closing notes at the end.
+
+### D-01 · Contrast — **FIXED**
 `--fg-faint` fails WCAG AA in all four themes (2.44–3.77:1); `--fg-muted` fails
 in sepia; the danger colour `#d1483a` fails in three. Affected: every empty
 state, all secondary metadata, all placeholders.
 
-### D-02 · The dark themes have no elevation — **OPEN**
+### D-02 · The dark themes have no elevation — **FIXED**
 In the black theme `--bg-sunken` is literally `#000000`, identical to `--bg`,
 so inputs, code blocks, settings segments and cover fallbacks are invisible.
 
-### D-03 · The reader has no line-length cap — **OPEN**
+### D-03 · The reader has no line-length cap — **FIXED**
 Column width is `viewport.clientWidth - marginX * 2`. On a 2560px display that
 is ~190 characters per line.
 
-### D-04 · The reader's measure, weight scale and spacing scale are ad hoc — **OPEN**
+### D-04 · The reader's measure, weight scale and spacing scale are ad hoc — **FIXED**
 Twelve font sizes (including a `13.2px` used once), nine weights (seven
 non-standard, and Segoe UI has no 520/540/570/620/640), twelve gap values,
 six off-grid.
 
-### D-05 · Covers are cropped with `object-fit: cover` — **OPEN**
+### D-05 · Covers are cropped with `object-fit: cover` — **FIXED**
 Landscape and square covers lose most of the image, usually including the
 title.
 
-### D-06 · Four settings-drawer layout bugs — **OPEN**
+### D-06 · Four settings-drawer layout bugs — **FIXED**
 Duplicate value readouts on every slider; the three-option Typeface segment
 wraps inside a two-column grid; the four-column grid stretches two-item rows;
 theme-swatch labels are near-white on the light and sepia previews.
 
-### D-07 · No focus ring on eleven interactive components — **OPEN**
+### D-07 · No focus ring on eleven interactive components — **FIXED**
 
 ---
 
@@ -346,3 +348,57 @@ arithmetic — the exact class of bug that shipped broken in commit `bb00a8f`.
   sub-pattern.
 - No secrets; largest tracked file is `Cargo.lock`; both lockfiles committed.
 - Per-user NSIS install needs no elevation and removes every key it creates.
+---
+
+## Addendum — visual and interaction pass
+
+Closed after the first round of fixes:
+
+- The settings drawer was unclickable. The scrim sat at `z-index: 38` while the
+  drawer had been moved to `29` to stop it covering the topbar, so the scrim was
+  painted over the drawer. Stacking is now reader < scrim `20` < drawer `29` <
+  topbar `30`.
+- Page theme swatch labels were invisible on Light and Sepia: the ink was
+  hardcoded near-white for all four because the guard compared against
+  `"#ffffff"`, which no preview matched. Each swatch now carries its own legible
+  ink, and the previews use the real `--page-bg` / `--bg-elev` values.
+- The typeface row wrapped "Mono" onto its own line because a fixed 4-column
+  track met a 2-column grid. Track count now follows item count.
+- Every slider printed its value twice — once in the field label and once in a
+  readout the slider drew itself. The slider updates the label instead.
+- Highlighting from the middle of a word reported "the text could not be
+  located". The wrapper searched a whitespace-collapsed copy of the text and
+  then sliced the *raw* text with those offsets; whenever collapsing changed the
+  length the offsets landed in the wrong place. It no longer translates offsets
+  between two differently-shaped strings: pass one searches each text node's own
+  raw data, and pass two maps back with a character walk.
+- All of Part 6 (contrast, dark elevation, measure cap, type scale, covers,
+  focus rings) is fixed, plus the smaller items the audits noted: the invisible
+  cover-menu hit target, the 158px-wide "no match" note, the invisible reader
+  chrome in sepia, the dark-theme highlight colours, and the card grid rhythm.
+
+## Still genuinely open
+
+- **S-04** CSS escape sequences (`\75 rl(`) and `image-set()` bypass the scrubber.
+  CSP still blocks the resulting request, so it is defacement-class.
+- **S-05** SVG `<a xlink:href="data:…">` survives the allow-list. Not currently
+  exploitable; the reader calls `preventDefault()` on any anchor.
+- **S-06** `MAX_TOTAL_UNCOMPRESSED` was renamed to `MAX_ARCHIVE_BYTES` to stop
+  the name implying a cumulative budget that is not enforced.
+- **S-07** hrefs are percent-decoded twice.
+- **C-04** only the first `rootfile` is tried.
+- **C-05** `linear="no"` spine items are paged like normal content.
+- **C-06** images with no usable extension are dropped.
+- **C-07** the EPUB 2 `<guide>` and NCX `playOrder` are not parsed.
+- **P-03** search re-derives every chapter's text on each keystroke.
+- **P-04** `search_in_book`, `import_books` and `get_cover` run on the main
+  thread, so a long search freezes the window and the loading overlay with it.
+- **X-09** no window-state persistence; the title never changes while reading.
+- **X-10** no state for a book whose file has moved or been deleted.
+- **X-11** import has no spinner, and each failure overwrites the previous toast.
+- **X-12** `dc:*` metadata, `page_list` and `landmarks` are parsed and never shown.
+- **T-03** no CI on pull requests.
+- **T-04** the workflow grants `contents: write` to every step and pins actions
+  to floating tags.
+- **T-07** no JavaScript or TypeScript tests. `reader.ts` is around 900 lines and
+  the column-pitch arithmetic had already shipped broken once.
