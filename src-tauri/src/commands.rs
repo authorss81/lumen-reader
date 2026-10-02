@@ -112,7 +112,7 @@ where
             file
         }
         None => {
-            let mut file = Epub::open_with_manifest(&path).map_err(err)?;
+            let file = Epub::open_with_manifest(&path).map_err(err)?;
             let manifest = Arc::new(file.manifest().clone());
             {
                 let mut cache = state.manifest_cache.lock().map_err(err)?;

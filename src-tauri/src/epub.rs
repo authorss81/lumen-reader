@@ -994,7 +994,8 @@ for node in doc.descendants() {
         let bytes = self.read(&path, budget.remaining())?;
         budget.consume(bytes.len() as u64);
         let mime = if declared == "application/octet-stream" {
-            sniff_mime(&bytes).ok_or(EpubError::NotFound(path))?
+            sniff_mime(&bytes)
+                .ok_or_else(|| EpubError::NotFound(path.clone()))?
         } else {
             declared
         };

@@ -219,7 +219,7 @@ fn excerpt_handles_case_folding_that_changes_byte_length() {
     // U+0130 folds to two chars (3 bytes) from one char (2 bytes). Deriving a
     // slice offset from the folded string used to panic, and `panic = "abort"`
     // turns that into a process kill rather than a failed command.
-    let mut epub = crate::tests::specimen_epub();
+    let epub = crate::tests::specimen_epub();
     if epub.is_err() {
         return;
     }
@@ -340,7 +340,7 @@ fn build_specimen() -> PathBuf {
     let opts = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+    let put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
         zip.start_file(name, opts).expect("start entry");
         zip.write_all(body.as_bytes()).expect("write entry");
     };
@@ -498,7 +498,7 @@ fn build_specimen_with_opf(opf: &str) -> PathBuf {
         .compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("mimetype", SimpleFileOptions::default()).unwrap();
     zip.write_all(b"application/epub+zip").unwrap();
-    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+    let put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body.as_bytes()).unwrap();
     };
@@ -631,7 +631,7 @@ fn build_multi_rootfile() -> PathBuf {
         .compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("mimetype", SimpleFileOptions::default()).unwrap();
     zip.write_all(b"application/epub+zip").unwrap();
-    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+    let put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body.as_bytes()).unwrap();
     };
@@ -649,7 +649,7 @@ fn build_multi_rootfile() -> PathBuf {
     put(&mut zip, "OEBPS/note.xhtml", &chapter("Footnote", ""));
     // A real PNG header on a name with no usable extension, which is exactly
     // the shape of asset that used to be dropped.
-    let mut put_bin = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &[u8]| {
+    let put_bin = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &[u8]| {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body).unwrap();
     };
