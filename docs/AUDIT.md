@@ -101,13 +101,13 @@ EPUB — then assigned it to `body.innerHTML`. A book titled
 Fix: `escapeHtml(book.title)`. This was the only `innerHTML` sink in the app
 that missed escaping.
 
-### S-04 · MEDIUM — CSS escapes and `image-set()` bypass `scrub_css` — **OPEN**
+### S-04 · MEDIUM — CSS escapes and `image-set()` bypass `scrub_css` — **FIXED**
 All three `url()` patterns require the literal ASCII `url(`. CSS escapes are
 decoded by the engine, so `\75 rl(https://…)` and `image-set("https://…")`
 survive scrubbing. CSP still blocks the fetch, so the impact is
 defacement-class, not exfiltration.
 
-### S-05 · MEDIUM — SVG `<a xlink:href="data:…">` survives the allow-list — **OPEN**
+### S-05 · MEDIUM — SVG `<a xlink:href="data:…">` survives the allow-list — **FIXED**
 The `<a>` handler removes `href` but not `xlink:href`, and `xlink:href` is in
 the generic attribute list while `url_schemes(["data"])` permits `data:`. Not
 currently exploitable — the reader calls `preventDefault()` on any `closest("a")`
@@ -118,7 +118,7 @@ currently exploitable — the reader calls `preventDefault()` on any `closest("a
 length. There is no cumulative accounting across reads. The real protections
 are the 32 MiB per-entry cap and the ratio check. The README overstated this.
 
-### S-07 · LOW — percent-decode runs twice on every href — **OPEN**
+### S-07 · LOW — percent-decode runs twice on every href — **FIXED**
 `resolve_href()` decodes internally *and* four call sites pre-decode. A zip
 entry genuinely named `a%20b.png` becomes unreachable. Not a traversal hole.
 
@@ -151,15 +151,15 @@ was not using it.
 
 Fix: metadata now uses `collect_text()`.
 
-### C-04 · MEDIUM — only the first `rootfile` is tried — **OPEN**
+### C-04 · MEDIUM — only the first `rootfile` is tried — **FIXED**
 One malformed first rootfile makes a multi-rootfile book permanently
 unopenable.
 
-### C-05 · MEDIUM — `linear="no"` spine items are paged like normal content — **OPEN**
+### C-05 · MEDIUM — `linear="no"` spine items are paged like normal content — **FIXED**
 Footnotes and endnote sections are interleaved into the sequential reading
 order. `Chapter.linear` is parsed and never used.
 
-### C-06 · MEDIUM — images with no usable extension are dropped — **OPEN**
+### C-06 · MEDIUM — images with no usable extension are dropped — **FIXED**
 `mime_for()` is extension-only, so `OEBPS/images/img001` is rejected even
 though the OPF manifest carries the authoritative media type. The `<img src>`
 is removed before the failure, so the image vanishes rather than falling back.
@@ -188,7 +188,7 @@ Fix: `Epub::open()` builds the name index only; manifest parsing moved to
 ~12 full-document allocations and one inflation per spine item, per debounced
 keystroke, with no text cache.
 
-### P-04 · MEDIUM — `search_in_book`, `import_books` and `get_cover` run on the main thread — **OPEN**
+### P-04 · MEDIUM — `search_in_book`, `import_books` and `get_cover` run on the main thread — **FIXED**
 Tauri executes synchronous commands on the main thread, so search freezes the
 window — and freezes the loading overlay with it.
 
@@ -246,7 +246,7 @@ focused `<textarea>` without firing `change`, so the note is lost silently.
 `nudgeFont()` anchors on `page / (pages - 1)`, and scroll mode forces
 `pages = 1`, so the anchor is always 0.
 
-### X-09 · MEDIUM — no window state, and the title never changes — **OPEN**
+### X-09 · MEDIUM — no window state, and the title never changes — **FIXED (title)**
 Every launch is 1280×840 centred on the primary monitor. The window title stays
 "Lumen Reader" while reading a book.
 
@@ -254,10 +254,10 @@ Every launch is 1280×840 centred on the primary monitor. The window title stays
 The user gets a 3.4-second toast containing a raw Rust error string, the card
 still looks healthy, and there is no recovery path.
 
-### X-11 · LOW — import has no spinner, and each failure overwrites the last — **OPEN**
+### X-11 · LOW — import has no spinner, and each failure overwrites the last — **FIXED**
 A single `#toast` node means N failures show exactly one.
 
-### X-12 · LOW — `data/book` metadata, `page_list` and `landmarks` are parsed and never shown — **OPEN**
+### X-12 · LOW — `data/book` metadata, `page_list` and `landmarks` are parsed and never shown — **PARTIAL**
 
 ---
 
@@ -314,11 +314,11 @@ thing that can emit final HTML" was false (S-01). "Not a single `unsafe`
 block" is true of our code but not of the 501-crate dependency tree.
 `panic = "abort"` was undocumented, and it means `cargo test --release` fails.
 
-### T-03 · No CI on pull requests — **OPEN**
+### T-03 · No CI on pull requests — **FIXED**
 Triggers are `push: main`, tag `v*`, and manual. A regression lands on main and
 builds a release before anything catches it.
 
-### T-04 · Workflow grants `contents: write` to every step — **OPEN**
+### T-04 · Workflow grants `contents: write` to every step — **FIXED**
 All four actions are pinned to floating tags, so a moved tag would execute with
 write access.
 
@@ -379,26 +379,23 @@ Closed after the first round of fixes:
 
 ## Still genuinely open
 
-- **S-04** CSS escape sequences (`\75 rl(`) and `image-set()` bypass the scrubber.
-  CSP still blocks the resulting request, so it is defacement-class.
-- **S-05** SVG `<a xlink:href="data:…">` survives the allow-list. Not currently
-  exploitable; the reader calls `preventDefault()` on any anchor.
 - **S-06** `MAX_TOTAL_UNCOMPRESSED` was renamed to `MAX_ARCHIVE_BYTES` to stop
-  the name implying a cumulative budget that is not enforced.
-- **S-07** hrefs are percent-decoded twice.
-- **C-04** only the first `rootfile` is tried.
-- **C-05** `linear="no"` spine items are paged like normal content.
-- **C-06** images with no usable extension are dropped.
-- **C-07** the EPUB 2 `<guide>` and NCX `playOrder` are not parsed.
-- **P-03** search re-derives every chapter's text on each keystroke.
-- **P-04** `search_in_book`, `import_books` and `get_cover` run on the main
-  thread, so a long search freezes the window and the loading overlay with it.
-- **X-09** no window-state persistence; the title never changes while reading.
-- **X-10** no state for a book whose file has moved or been deleted.
-- **X-11** import has no spinner, and each failure overwrites the previous toast.
-- **X-12** `dc:*` metadata, `page_list` and `landmarks` are parsed and never shown.
-- **T-03** no CI on pull requests.
-- **T-04** the workflow grants `contents: write` to every step and pins actions
-  to floating tags.
-- **T-07** no JavaScript or TypeScript tests. `reader.ts` is around 900 lines and
-  the column-pitch arithmetic had already shipped broken once.
+  the name implying a cumulative budget that is not enforced. The name is now
+  honest, but there is still no cumulative expansion budget.
+- **C-07** the EPUB 2 `<guide>` and NCX `playOrder` are not parsed. Books that
+  rely on `<guide>` for their reading order fall back to the spine, which is
+  usually but not always right.
+- **P-03** search re-derives every chapter's text on each keystroke. Debounced
+  at 220 ms, so it is not noticeable on a short book, but a long one will lag.
+- **X-10** no state for a book whose file has moved or been deleted. The row
+  stays in the library and fails on open, with no way to relink it.
+- **X-12** `dc:*` metadata and `landmarks` are parsed and still never shown.
+  `page_list` is now rendered in the contents panel.
+- **T-05** `url = "2"` in `tauri.conf.json` is unused.
+- **T-06** `package.json` is still named after the temp scaffold.
+- **T-07** no JavaScript or TypeScript tests. `reader.ts` is around 1100 lines and
+  the column-pitch arithmetic had already shipped broken once. This is the
+  largest remaining risk: the front end has no automated coverage at all, and
+  three of the bugs fixed in this pass (settings rebinding, the hidden scroll
+  chrome, and highlights with no stored position) were all front-end-only and
+  would not have been caught by the Rust suite.
