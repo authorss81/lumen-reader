@@ -9,7 +9,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  # The job only writes to the repository when it is cutting a tagged release.
+  # Every push to main that is not a tag therefore runs with a read-only token
+  # instead of a token that can push to master.
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,6 +23,8 @@ jobs:
     name: Windows release
     runs-on: windows-latest
     timeout-minutes: 45
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4

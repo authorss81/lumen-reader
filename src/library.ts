@@ -18,6 +18,9 @@ export interface LibraryCallbacks {
   onImport: () => void;
   onChanged: () => void;
   onNotify: (message: string) => void;
+  /** Optional progress overlay, for the operations that are not instant. */
+  onBusy?: (message: string) => void;
+  onIdle?: () => void;
 }
 
 const coverCache = new Map<string, string | null>();
@@ -314,30 +317,44 @@ async importViaDialog() {
    * returned rows rather than trying to match on the input paths.
    */
   async importPaths(paths: string[]): Promise<BookMeta[]> {
+    // Parsing and thumbnailing a large batch takes a moment. Without a busy
+    // state the window simply sat there and looked like the double-click had
+    // missed.
+    this.cb.onBusy?.(
+      paths.length === 1 ? "Adding book." : `Adding ${paths.length} books.`,
+    );
     try {
       const report = await api.importBooks(paths);
       for (const book of report.added) coverCache.delete(book.id);
+      // One message, not two. The toast is a single slot, so notifying twice
+      // meant the second call replaced the first: a batch where some books
+      // imported and some did not only ever reported one of the two halves.
+      const parts: string[] = [];
       if (report.added.length) {
-        this.cb.onNotify(
+        parts.push(
           report.added.length === 1
             ? `Added “${report.added[0].title}”`
             : `Added ${report.added.length} books`,
         );
       }
       if (report.failed.length) {
-        this.cb.onNotify(
+        const names = report.failed
+          .map((f) => basename(f.path))
+          .join(", ");
+        parts.push(
           report.failed.length === 1
-            ? `Could not add ${basename(report.failed[0].path)}: ${report.failed[0].error}`
-            : `${report.failed.length} files could not be added: ${report.failed
-                .map((f) => basename(f.path))
-                .join(", ")}`,
+            ? `Could not add ${names}: ${report.failed[0].error}`
+            : `${report.failed.length} files could not be added: ${names}`,
         );
       }
+      if (parts.length) this.cb.onNotify(parts.join(" "));
       await this.cb.onChanged();
       return report.added;
     } catch (error) {
       this.cb.onNotify(String(error));
       return [];
+    } finally {
+      this.cb.onIdle?.();
     }
   }
 }

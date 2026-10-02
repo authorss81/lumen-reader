@@ -315,6 +315,11 @@ private measure() {
     }
     const percent = Math.round(this.overallProgress() * 100);
     this.subLabel.textContent = `${active || `Section ${this.chapter + 1}`} · ${percent}%`;
+    // Keep the OS title in step with what is being read. Without this the
+    // taskbar button, the Alt-Tab list and the window's own title bar all just
+    // said "Lumen Reader", so several open books were indistinguishable.
+    const heading = active || `Section ${this.chapter + 1}`;
+    document.title = `${heading} · ${this.book.title || "Lumen Reader"}`;
   }
 
   overallProgress(): number {
@@ -372,12 +377,43 @@ if (!this.book) return 0;
       this.goToPage(this.page + 1);
       return;
     }
-    if (this.book && this.chapter + 1 < this.book.chapters.length) {
-      await this.loadChapter(this.chapter + 1);
+    const target = this.nextLinearChapter();
+    if (target !== null) {
+      await this.loadChapter(target);
       this.showChromeTemporarily();
     } else {
       this.cb.onNotify("End of book");
     }
+  }
+
+  /**
+   * The next chapter in the reading flow, skipping spine items marked
+   * `linear="no"`. Those are footnotes, figures and standalone pages: they stay
+   * reachable from the table of contents, but reading straight through must not
+   * land on them. A book whose spine is entirely non-linear still has to be
+   * navigable, so that case falls back to the plain next index.
+   */
+  private nextLinearChapter(): number | null {
+    const chapters = this.book?.chapters;
+    if (!chapters) return null;
+    let found: number | null = null;
+    for (let i = this.chapter + 1; i < chapters.length; i += 1) {
+      if (chapters[i].linear) return i;
+      found = i;
+    }
+    return found ?? (this.chapter + 1 < chapters.length ? this.chapter + 1 : null);
+  }
+
+  /** The previous chapter in the reading flow, skipping `linear="no"`. */
+  private prevLinearChapter(): number | null {
+    const chapters = this.book?.chapters;
+    if (!chapters) return null;
+    let found: number | null = null;
+    for (let i = this.chapter - 1; i >= 0; i -= 1) {
+      if (chapters[i].linear) return i;
+      found = i;
+    }
+    return found ?? (this.chapter > 0 ? this.chapter - 1 : null);
   }
 
   async prev(): Promise<void> {
@@ -392,8 +428,8 @@ if (!this.book) return 0;
       this.goToPage(this.page - 1);
       return;
     }
-    if (this.chapter > 0) {
-      const target = this.chapter - 1;
+    const target = this.prevLinearChapter();
+    if (target !== null) {
       await this.loadChapter(target);
       if (this.settings.scrollMode) {
         this.viewport.scrollTop = this.viewport.scrollHeight;
@@ -630,7 +666,10 @@ private async highlight(color: string, quote: string, withNote = false) {
       const created = await api.addAnnotation({
         book_id: this.book.id,
         href,
-        selector: "",
+        // Store the position. The `selector` column was previously always
+        // written as an empty string, so "go to highlight" had no way to land
+        // on the highlight and dropped you at the top of the chapter.
+        selector: JSON.stringify(this.locator()),
         quote: quote.slice(0, 600),
         note: "",
         color,
@@ -652,6 +691,36 @@ private async highlight(color: string, quote: string, withNote = false) {
     } catch (error) {
       this.cb.onNotify(String(error));
     }
+  }
+
+  /**
+   * Jump to a highlight and put it in view. Prefers the rendered `<mark>`, so
+   * it is exact even if the stored position is slightly stale; falls back to the
+   * locator that was captured when the highlight was made.
+   */
+  async goToAnnotation(note: Annotation) {
+    await this.goToHref(note.href, parseLocator(note.selector));
+    const mark = this.content.querySelector<HTMLElement>(
+      `mark[data-id="${note.id}"]`,
+    );
+    if (mark) this.revealElement(mark);
+  }
+
+  /** Bring an element inside the current chapter into view. */
+  private revealElement(node: HTMLElement) {
+    if (this.settings.scrollMode) {
+      this.viewport.scrollTo({
+        top: Math.max(0, node.getBoundingClientRect().top - this.viewport.clientHeight / 3),
+        behavior: "smooth",
+      });
+      this.paint();
+      return;
+    }
+    const { width } = this.metrics();
+    const step = width + GAP;
+    const base = this.content.getBoundingClientRect();
+    const x = node.getBoundingClientRect().left - base.left;
+    this.goToPage(Math.max(0, Math.round((x - 1) / step)), false);
   }
 
   private repaintMarks() {

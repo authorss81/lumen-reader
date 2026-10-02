@@ -72,6 +72,7 @@ function showLibrary() {
   libraryEl.hidden = false;
   readerEl.hidden = true;
   $("topbar").hidden = true;
+  document.title = "Lumen Reader";
   void refreshLibrary();
 }
 
@@ -216,6 +217,27 @@ function renderToc() {
       closePanel();
     });
     body.appendChild(btn);
+  }
+
+  // EPUB 3 books often carry a page-list mapping printed page numbers onto
+  // locations. It was parsed and shipped to the webview but never rendered, so
+  // a reader could not jump to "page 214" by number. Only shown when the book
+  // actually has one, and only when the filter would not hide every row.
+  const pages = reader.getPageList().filter((n) => matchesPanelFilter(n.title));
+  if (pages.length) {
+    body.appendChild(el("div", "toc-section-label", "Printed pages"));
+    for (const node of pages) {
+      const btn = el("button", "toc-item toc-page");
+      btn.type = "button";
+      if (node.href.split("#")[0] === currentHref) btn.classList.add("active");
+      btn.style.paddingLeft = "10px";
+      btn.appendChild(document.createTextNode(node.title || "Untitled"));
+      btn.addEventListener("click", async () => {
+        await reader.goToHref(node.href);
+        closePanel();
+      });
+      body.appendChild(btn);
+    }
   }
 }
 
@@ -417,7 +439,7 @@ async function renderNotes() {
     jump.title = "Go to highlight";
     jump.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
     jump.addEventListener("click", async () => {
-      await reader.goToHref(note.href);
+      await reader.goToAnnotation(note);
       closePanel();
     });
     const remove = el("button", "icon-btn");
@@ -663,6 +685,8 @@ async function boot() {
       onImport: () => void library.importViaDialog(),
       onChanged: () => void refreshLibrary(),
       onNotify: toast,
+      onBusy: (message) => busy(message),
+      onIdle: () => idle(),
     },
   );
 

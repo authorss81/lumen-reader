@@ -528,3 +528,200 @@ fn rejects_an_empty_file() {
     assert!(Epub::open(&empty).is_err());
 }
 
+
+#[test]
+fn css_escape_does_not_bypass_the_scrubber() {
+    // `\75` is `u`, so this is a url( the browser resolves, but it matches none
+    // of the literal patterns. Unescaping first is what makes it catchable.
+    let sneaky = r".a { background: \75 rl(https://evil.example/x.png); }";
+    let out = scrub_css(sneaky);
+    assert!(!out.contains("evil.example"), "escaped url survived: {out}");
+    assert!(!out.contains(r"\75 rl"), "escape sequence left intact: {out}");
+
+    // A hex escape for a scheme must not survive either.
+    let scheme = r".b { background: \75 rl(\6a avascript:alert(1)); }";
+    let out = scrub_css(scheme);
+    assert!(!out.contains("avascript"), "escaped scheme survived: {out}");
+
+    // Data images still have to work, otherwise every inline cover breaks.
+    let keep = r".c { background: url(data:image/png;base64,AAAA); }";
+    assert!(scrub_css(keep).contains("data:image/png;base64"));
+
+    // image-set() takes a bare URL and is not caught by the url() patterns.
+    let set = r".d { background: image-set(https://evil.example/y.png 1x); }";
+    assert!(!scrub_css(set).contains("evil.example"));
+}
+
+#[test]
+fn css_escape_decoder_terminates_correctly() {
+    // Exactly six hex digits, then one whitespace consumed as the terminator.
+    assert_eq!(crate::epub::decode_css_escapes_for_test(r"\75 rl"), "url");
+    // Escaped backslash and quote survive so ordinary CSS is not mangled.
+    assert_eq!(crate::epub::decode_css_escapes_for_test(r"content: '\201C'"), "content: '\u{201C}'");
+    // A bare backslash is not an escape; it must keep its backslash.
+    assert_eq!(crate::epub::decode_css_escapes_for_test(r"a\b"), r"a\b");
+    // Line continuation is dropped, joining the declaration.
+    assert_eq!(crate::epub::decode_css_escapes_for_test("a\\\nb"), "ab");
+    // Plain text is returned untouched.
+    assert_eq!(crate::epub::decode_css_escapes_for_test(".a { color: red; }"), ".a { color: red; }");
+}
+
+#[test]
+fn svg_anchor_cannot_smuggle_a_data_url() {
+    // xlink:href is on the generic attribute allow-list, so an SVG anchor
+    // could otherwise carry a data: document past the url() gate.
+    let out = crate::epub::sanitize_html_for_test(
+        r#"<svg xmlns:xlink="http://www.w3.org/1999/xlink"><a xlink:href="data:text/html,<script>alert(1)</script>">x</a></svg>"#,
+    );
+    assert!(!out.contains("xlink:href"), "xlink:href survived: {out}");
+
+    // And it is still treated as a real link when it points somewhere sane.
+    let ok = crate::epub::sanitize_html_for_test(
+        r#"<svg><a xlink:href="chap2.xhtml">next</a></svg>"#,
+    );
+    assert!(ok.contains("chap2.xhtml"), "svg link was dropped: {ok}");
+}
+
+/// Build a book whose container lists a decoy rootfile before the real one,
+/// plus a spine containing a non-linear item.
+fn build_multi_rootfile() -> PathBuf {
+    const CONTAINER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/legacy/legacy.opf" media-type="application/oebps-package+xml"/>
+    <rootfile full-path="OEBPS/other.opf" media-type="application/x-dtbncx+xml"/>
+    <rootfile full-path="OEBPS/nope.opf" media-type="application/oebps-package+xml"/>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+    // The decoy first rootfile has a real OPF but no spine of its own, so
+    // resolving to it would yield a book with no readable content.
+    const DECOY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="d">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="d">urn:uuid:decoy</dc:identifier><dc:title>Decoy</dc:title>
+  </metadata>
+  <manifest></manifest><spine></spine>
+</package>"#;
+    const CONTENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:test-0002</dc:identifier>
+    <dc:title>Multiple Rootfiles</dc:title><dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="note" href="note.xhtml" media-type="application/xhtml+xml"/>
+    <item id="art" href="images/art.blob" media-type="image/png"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+    <itemref idref="note" linear="no"/>
+  </spine>
+</package>"#;
+
+    let path = unique_path("multiroot");
+    let file = std::fs::File::create(&path).expect("create");
+    let mut zip = ZipWriter::new(file);
+    let opts = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("mimetype", SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    let mut put = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &str| {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    };
+    put(&mut zip, "META-INF/container.xml", CONTAINER);
+    put(&mut zip, "OEBPS/legacy/legacy.opf", DECOY);
+    put(&mut zip, "OEBPS/content.opf", CONTENT);
+    put(&mut zip, "OEBPS/nav.xhtml", NAV);
+    put(&mut zip, "OEBPS/toc.ncx", NCX);
+    put(
+        &mut zip,
+        "OEBPS/ch1.xhtml",
+        &chapter("One", r#"<img src="images/art.blob" alt="artwork"/>"#),
+    );
+    put(&mut zip, "OEBPS/ch2.xhtml", &chapter("Two", ""));
+    put(&mut zip, "OEBPS/note.xhtml", &chapter("Footnote", ""));
+    // A real PNG header on a name with no usable extension, which is exactly
+    // the shape of asset that used to be dropped.
+    let mut put_bin = |zip: &mut ZipWriter<std::fs::File>, name: &str, body: &[u8]| {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body).unwrap();
+    };
+    put_bin(
+        &mut zip,
+        "OEBPS/images/art.blob",
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+    );
+    zip.finish().unwrap();
+    path
+}
+
+#[test]
+fn reads_the_correct_rootfile_when_several_are_listed() {
+    let path = build_multi_rootfile();
+    let mut epub = Epub::open(&path).expect("open");
+    epub.ensure_manifest().expect("parse");
+    let manifest = epub.manifest();
+    // The decoy "Decoy" OPF comes first in the container; picking it would
+    // produce an empty book.
+    assert_eq!(manifest.title, "Multiple Rootfiles");
+    assert_eq!(manifest.chapters.len(), 3);
+}
+
+#[test]
+fn non_linear_spine_items_are_skipped_when_stepping_through_the_book() {
+    let path = build_multi_rootfile();
+    let mut epub = Epub::open(&path).expect("open");
+    epub.ensure_manifest().expect("parse");
+    let hrefs: Vec<&str> = epub
+        .manifest()
+        .chapters
+        .iter()
+        .map(|c| c.href.as_str())
+        .collect();
+    assert_eq!(hrefs.len(), 3, "the footnote must stay in the reading order");
+    // It is still reachable, and flagged.
+    let note = epub
+        .manifest()
+        .chapters
+        .iter()
+        .find(|c| !c.linear)
+        .expect("non-linear item");
+    assert!(note.href.ends_with("note.xhtml"));
+    // But reading straight through skips it.
+    assert_eq!(epub.next_linear(0), Some(1), "footnote follows chapter two");
+    assert_eq!(epub.next_linear(1), Some(2));
+    assert_eq!(epub.next_linear(2), None, "nothing linear after the footnote");
+    assert_eq!(epub.prev_linear(2), Some(1));
+    assert_eq!(epub.prev_linear(1), Some(0));
+    assert_eq!(epub.prev_linear(0), None);
+    // The flags the webview uses must agree.
+    let second = epub.chapter(1).expect("chapter two");
+    assert!(second.has_next, "should offer the next linear chapter");
+    assert!(!second.is_last);
+    let last = epub.chapter(2).expect("footnote");
+    assert!(last.is_last, "the trailing footnote ends the linear flow");
+}
+
+#[test]
+fn assets_without_a_usable_extension_are_sniffed() {
+    let path = build_multi_rootfile();
+    let mut epub = Epub::open(&path).expect("open");
+    epub.ensure_manifest().expect("parse");
+    let html = epub
+        .chapter(0)
+        .expect("chapter one")
+        .html;
+    // The artwork is named "art.blob" but starts with a PNG signature, so it
+    // must be inlined as an image rather than dropped.
+    assert!(
+        html.contains("data:image/png;base64,"),
+        "extensionless image was not inlined: {html}"
+    );
+}

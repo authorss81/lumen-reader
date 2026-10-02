@@ -79,6 +79,41 @@ fn mime_for(path: &str) -> &'static str {
     }
 }
 
+/// Identify an image or font from its leading bytes, for the many books that
+/// give assets a meaningless name and rely on the manifest to say what they are.
+///
+/// Only the formats a webview renders unconditionally are recognised. Anything
+/// else stays unknown so the asset is skipped rather than inlined with a lying
+/// content type.
+fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const GIF87: &[u8] = b"GIF87a";
+    const GIF89: &[u8] = b"GIF89a";
+    const RIFF: &[u8] = b"RIFF";
+    const WEBP: &[u8] = b"WEBP";
+    const TTFF: &[u8] = b"\x00\x01\x00\x00";
+    const OTOTO: &[u8] = b"OTTO";
+    if bytes.starts_with(PNG) {
+        Some("image/png")
+    } else if bytes.starts_with(GIF87) || bytes.starts_with(GIF89) {
+        Some("image/gif")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(RIFF) && bytes.len() > 12 && &bytes[8..12] == WEBP {
+        Some("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else if bytes.starts_with(OTOTO) {
+        Some("font/otf")
+    } else if bytes.starts_with(TTFF) {
+        Some("font/ttf")
+    } else if bytes.len() > 4 && (&bytes[..4] == b"wOFF" || &bytes[..4] == b"wOF2") {
+        Some(if &bytes[..4] == b"wOFF" { "font/woff" } else { "font/woff2" })
+    } else {
+        None
+    }
+}
+
 /// Dublin Core metadata may appear under several namespace URIs (EPUB 2
 /// elements, EPUB 3 terms, or none at all), so match on a substring.
 fn is_dublin_core(namespace: Option<&str>) -> bool {
@@ -316,7 +351,7 @@ fn re_dangerous_css() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?is)(expression\s*\(|-moz-binding|behavior\s*:|@charset|javascript\s*:|vbscript\s*:)",
+            r"(?is)(expression\s*\(|-moz-binding|behavior\s*:|@charset|javascript\s*:|vbscript\s*:|-webkit-image-set|-moz-image-set|image-set\s*\()",
         )
         .unwrap()
     })
@@ -324,8 +359,14 @@ fn re_dangerous_css() -> &'static Regex {
 
 /// Neutralise every construct in a stylesheet that could execute code or
 /// reach the network. Only `data:` images survive.
+///
+/// CSS escapes are decoded by the engine before a token is interpreted, so
+/// `\75 rl(https://…)` *is* a `url()` to the browser while matching none of the
+/// literal patterns. The stylesheet is therefore unescaped first, so `url`
+/// always appears spelled out before the patterns run.
 pub fn scrub_css(css: &str) -> String {
-    let mut out = re_css_comment().replace_all(css, "").into_owned();
+    let mut out = decode_css_escapes(css);
+    out = re_css_comment().replace_all(&out, "").into_owned();
     out = re_at_import().replace_all(&out, "").into_owned();
     out = re_dangerous_css().replace_all(&out, "").into_owned();
     // The `regex` crate has no backreferences, so quoted and bare forms are
@@ -345,6 +386,43 @@ pub fn scrub_css(css: &str) -> String {
     rewrite(&mut out, re_url_dq());
     rewrite(&mut out, re_url_sq());
     rewrite(&mut out, re_url_bare());
+    out
+}
+
+/// Replace CSS escape sequences (`\` plus up to six hex digits and an optional
+/// terminating whitespace) with the character they denote. A backslash followed
+/// by whitespace is a line continuation and is dropped. Anything else keeps its
+/// backslash so ordinary CSS is not corrupted.
+fn decode_css_escapes(css: &str) -> String {
+    let chars: Vec<char> = css.chars().collect();
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+        let mut hex = String::new();
+        while i < chars.len() && hex.len() < 6 && chars[i].is_ascii_hexdigit() {
+            hex.push(chars[i]);
+            i += 1;
+        }
+        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            Some(decoded) => {
+                out.push(decoded);
+                if i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
+            }
+            None => out.push('\\'),
+        }
+    }
     out
 }
 
@@ -577,16 +655,65 @@ impl Epub {
         let text = decode_markup(&bytes);
         let doc = Document::parse(&text).map_err(|e| EpubError::Xml(format!("container.xml: {e}")))?;
 
+        // EPUB 3.0.1 allows several <rootfile> elements and says consumers
+        // SHOULD read all of them; the media-type attribute picks the
+        // authoritative one. Previously only the first was considered, so an
+        // ebook that listed a legacy NCX rootfile second could resolve to the
+        // wrong package document, or to none at all.
+        let mut fallback: Option<String> = None;
         for node in doc.descendants() {
-            if node.tag_name().name() == "rootfile" {
-                if let Some(full) = node.attribute("full-path") {
-                    if let Some(resolved) = resolve_href("", full) {
-                        return Ok(resolved);
-                    }
-                }
+            if node.tag_name().name() != "rootfile" {
+                continue;
+            }
+            let Some(full) = node.attribute("full-path") else {
+                continue;
+            };
+            let Some(resolved) = resolve_href("", full) else {
+                continue;
+            };
+            // Skip anything that is not actually present in the archive.
+            if !names.contains_key(&resolved) {
+                continue;
+            }
+            let media = node.attribute("media-type").unwrap_or("").to_ascii_lowercase();
+            if media == "application/oebps-package+xml" {
+                return Ok(resolved);
+            }
+            if media.is_empty() {
+                fallback.get_or_insert(resolved);
+            } else if fallback.is_none() {
+                fallback = Some(resolved);
             }
         }
-        Err(EpubError::NotFound("rootfile in container.xml".into()))
+        fallback.ok_or_else(|| EpubError::NotFound("rootfile in container.xml".into()))
+    }
+
+    /// The next chapter to read, starting the search at `from`.
+    ///
+    /// A spine item marked `linear="no"` is a footnote, a figure or a
+    /// standalone page. It stays in the reading order so the table of contents
+    /// can still reach it, but stepping forward through the book must skip over
+    /// it, which is what the attribute exists to express.
+    pub fn next_linear(&self, from: usize) -> Option<usize> {
+        self.manifest
+            .chapters
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, chapter)| chapter.linear)
+            .map(|(i, _)| i)
+    }
+
+    /// The previous linear chapter before `before`.
+    pub fn prev_linear(&self, before: usize) -> Option<usize> {
+        self.manifest
+            .chapters
+            .iter()
+            .enumerate()
+            .take(before)
+            .filter(|(_, chapter)| chapter.linear)
+            .next_back()
+            .map(|(i, _)| i)
     }
 
     fn read_index(
@@ -712,7 +839,7 @@ struct Item {
             }
             let id = node.attribute("id").unwrap_or("").to_string();
             let href_raw = node.attribute("href").unwrap_or("");
-            let Some(href) = resolve_href(&base, &percent_decode(href_raw)) else {
+            let Some(href) = resolve_href(&base, href_raw) else {
                 continue;
             };
             let media_type = node
@@ -859,12 +986,21 @@ for node in doc.descendants() {
         if !self.names.contains_key(&path) {
             return Err(EpubError::NotFound(path));
         }
-        let mime = mime_for(&path);
+        // The extension is only a hint. Plenty of real books ship artwork as
+        // `img001` or `cover.dat` and declare the true type only in the OPF
+        // manifest, so a name we cannot map must not be discarded outright -
+        // sniff the bytes instead.
+        let declared = mime_for(&path);
+        let bytes = self.read(&path, budget.remaining())?;
+        budget.consume(bytes.len() as u64);
+        let mime = if declared == "application/octet-stream" {
+            sniff_mime(&bytes).ok_or(EpubError::NotFound(path))?
+        } else {
+            declared
+        };
         if !(mime.starts_with("image/") || mime.starts_with("font/")) {
             return Err(EpubError::NotFound(path));
         }
-        let bytes = self.read(&path, budget.remaining())?;
-        budget.consume(bytes.len() as u64);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         Ok(format!("data:{mime};base64,{encoded}"))
     }
@@ -887,9 +1023,9 @@ pub fn chapter(&mut self, index: usize) -> Result<ChapterContent> {
             title: if title.is_empty() { chapter.title.clone() } else { title },
             index,
             html,
-            is_last: index + 1 >= self.manifest.chapters.len(),
-            has_prev: index > 0,
-            has_next: index + 1 < self.manifest.chapters.len(),
+            is_last: self.next_linear(index + 1).is_none(),
+            has_prev: self.prev_linear(index).is_some(),
+            has_next: self.next_linear(index + 1).is_some(),
         })
     }
 
@@ -988,10 +1124,17 @@ for block in inline_styles.iter().take(64) {
                 }
                 "a" => {
                     let href = attr_get(attrs, "href").unwrap_or("").to_string();
+                    // An SVG anchor can carry xlink:href instead, and that
+                    // attribute is on the generic allow-list. Leaving it would
+                    // let xlink:href="data:text/html,..." survive the final
+                    // gate, since data is an allowed URL scheme.
+                    let svg_href = attr_get(attrs, "xlink:href").unwrap_or("").to_string();
                     attr_remove(attrs, "href");
+                    attr_remove(attrs, "xlink:href");
                     attr_remove(attrs, "target");
-                    if !href.is_empty() {
-                        let decoded = percent_decode(&href);
+                    let source = if href.is_empty() { svg_href } else { href };
+                    if !source.is_empty() {
+                        let decoded = percent_decode(&source);
                         let external = decoded.to_ascii_lowercase().starts_with("http")
                             || decoded.to_ascii_lowercase().starts_with("mailto:");
                         if external {
@@ -1170,7 +1313,7 @@ where
                     }
                 }
                 if let Some(h) = href {
-                    if let Some(resolved) = resolve_href(base, &percent_decode(&h)) {
+                    if let Some(resolved) = resolve_href(base, &h) {
                         out.push(TocNode {
                             title: if title.is_empty() { "Untitled".into() } else { title },
                             href: resolved,
@@ -1195,7 +1338,7 @@ fn scrape_nav_regex(text: &str, base: &str) -> Vec<TocNode> {
     for caps in re.captures_iter(text) {
         let href = &caps[1];
         let title = strip_tags(&caps[2]);
-        if let Some(resolved) = resolve_href(base, &percent_decode(href)) {
+        if let Some(resolved) = resolve_href(base, href) {
             out.push(TocNode {
                 title: if title.is_empty() { "Untitled".into() } else { title },
                 href: resolved,
@@ -1248,7 +1391,7 @@ where
         collect_ncx(node.children(), base, &mut children, depth);
         *depth -= 1;
         if let Some(h) = href {
-            if let Some(resolved) = resolve_href(base, &percent_decode(&h)) {
+            if let Some(resolved) = resolve_href(base, &h) {
                 out.push(TocNode {
                     title: if title.is_empty() { "Untitled".into() } else { title },
                     href: resolved,
@@ -1523,6 +1666,10 @@ pub fn decode_for_test(bytes: &[u8]) -> String {
 #[cfg(test)]
 pub fn excerpt_for_test(text: &str, start: usize, end: usize, needle: &str) -> String {
     build_excerpt(text, start, end, needle)
+}
+#[cfg(test)]
+pub fn decode_css_escapes_for_test(css: &str) -> String {
+    decode_css_escapes(css)
 }
 
 // ---------------------------------------------------------------------------

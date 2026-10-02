@@ -1074,6 +1074,21 @@ select.select {
   color: var(--fg-faint);
   margin-top: 2px;
 }
+/* Separator for the printed-page list appended below the chapter list. */
+.toc-section-label {
+  margin: 14px 0 4px;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.toc-page {
+  font-variant-numeric: tabular-nums;
+}
 
 .result {
   display: block;

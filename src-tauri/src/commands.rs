@@ -185,7 +185,7 @@ pub struct ImportFailure {
 }
 
 #[tauri::command]
-pub fn import_books(state: State<'_, AppState>, paths: Vec<String>) -> CmdResult<ImportReport> {
+pub async fn import_books(state: State<'_, AppState>, paths: Vec<String>) -> CmdResult<ImportReport> {
     let mut added = Vec::new();
     let mut failed = Vec::new();
 
@@ -221,7 +221,7 @@ pub fn import_books(state: State<'_, AppState>, paths: Vec<String>) -> CmdResult
 }
 
 #[tauri::command]
-pub fn list_books(state: State<'_, AppState>) -> CmdResult<Vec<BookMeta>> {
+pub async fn list_books(state: State<'_, AppState>) -> CmdResult<Vec<BookMeta>> {
     state.store().list_books().map_err(err)
 }
 
@@ -237,7 +237,7 @@ pub struct BookDetail {
 }
 
 #[tauri::command]
-pub fn open_book(state: State<'_, AppState>, id: String) -> CmdResult<BookDetail> {
+pub async fn open_book(state: State<'_, AppState>, id: String) -> CmdResult<BookDetail> {
     let book = {
         let store = state.store();
         let Some(mut book) = store.get_book(&id).map_err(err)? else {
@@ -271,7 +271,7 @@ pub fn open_book(state: State<'_, AppState>, id: String) -> CmdResult<BookDetail
 }
 
 #[tauri::command]
-pub fn load_chapter(state: State<'_, AppState>, id: String, index: usize) -> CmdResult<ChapterContent> {
+pub async fn load_chapter(state: State<'_, AppState>, id: String, index: usize) -> CmdResult<ChapterContent> {
     with_epub(&state, &id, |file| {
         let mut content = file.chapter(index).map_err(err)?;
         if content.title.is_empty() {
@@ -284,7 +284,7 @@ pub fn load_chapter(state: State<'_, AppState>, id: String, index: usize) -> Cmd
 }
 
 #[tauri::command]
-pub fn search_in_book(
+pub async fn search_in_book(
     state: State<'_, AppState>,
     id: String,
     query: String,
@@ -295,12 +295,12 @@ pub fn search_in_book(
 }
 
 #[tauri::command]
-pub fn get_cover(state: State<'_, AppState>, id: String) -> CmdResult<Option<String>> {
+pub async fn get_cover(state: State<'_, AppState>, id: String) -> CmdResult<Option<String>> {
     with_epub(&state, &id, |file| Ok(file.cover_data_url().unwrap_or(None)))
 }
 
 #[tauri::command]
-pub fn remove_book(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+pub async fn remove_book(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     if let Some(book) = state.store().get_book(&id).map_err(err)? {
         state.store().remove_book(&id).map_err(err)?;
         if let Ok(mut cache) = state.manifest_cache.lock() {
@@ -361,7 +361,7 @@ pub fn reveal_in_explorer(path: String) -> CmdResult<()> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_annotations(
+pub async fn list_annotations(
     state: State<'_, AppState>,
     book_id: String,
     href: Option<String>,
@@ -383,7 +383,7 @@ pub struct NewAnnotation {
 }
 
 #[tauri::command]
-pub fn add_annotation(state: State<'_, AppState>, payload: NewAnnotation) -> CmdResult<Annotation> {
+pub async fn add_annotation(state: State<'_, AppState>, payload: NewAnnotation) -> CmdResult<Annotation> {
     state
         .store()
         .add_annotation(
@@ -424,12 +424,12 @@ pub fn delete_annotation(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub fn list_bookmarks(state: State<'_, AppState>, book_id: String) -> CmdResult<Vec<Bookmark>> {
+pub async fn list_bookmarks(state: State<'_, AppState>, book_id: String) -> CmdResult<Vec<Bookmark>> {
     state.store().list_bookmarks(&book_id).map_err(err)
 }
 
 #[tauri::command]
-pub fn add_bookmark(
+pub async fn add_bookmark(
     state: State<'_, AppState>,
     book_id: String,
     href: String,
@@ -475,7 +475,7 @@ pub fn set_setting(
 }
 
 #[tauri::command]
-pub fn library_path(app: tauri::AppHandle) -> CmdResult<String> {
+pub async fn library_path(app: tauri::AppHandle) -> CmdResult<String> {
     let dir = app
         .path()
         .app_data_dir()
