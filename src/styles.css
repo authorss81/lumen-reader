@@ -821,7 +821,10 @@ html[data-theme="black"] .epub-doc .hl {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.42);
-  z-index: 38;
+  /* MUST sit below the drawer it dims. At 38 it painted over the settings
+     sheet (29) and swallowed every click inside it. Stacking order is:
+     reader 0-8 < scrim 20 < drawer 29 < topbar 30 < toast/menu 90+. */
+  z-index: 20;
   animation: fade 0.16s var(--ease);
 }
 @keyframes fade {
@@ -1118,11 +1121,12 @@ html[data-theme="black"] .epub-doc .hl {
 }
 .seg {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* The track count follows the item count. A fixed `repeat(4, 1fr)` meant a
+     3-option row in a 2-column grid wrapped its last item onto its own line,
+     and 2-option rows stretched across half the drawer. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 5px;
-}
-.seg-cols-2 {
-  grid-template-columns: repeat(2, 1fr);
 }
 .seg-btn {
   padding: 9px 6px;

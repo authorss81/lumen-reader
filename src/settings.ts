@@ -21,11 +21,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scrollMode: false,
 };
 
-const THEMES: { id: AppSettings["theme"]; label: string; preview: [string, string] }[] = [
-  { id: "light", label: "Light", preview: ["#fbfaf7", "#ffffff"] },
-  { id: "sepia", label: "Sepia", preview: ["#f5ecd8", "#e8dfcc"] },
-  { id: "dark", label: "Dark", preview: ["#1a1c20", "#2a2e34"] },
-  { id: "black", label: "Black", preview: ["#000000", "#16181c"] },
+/**
+ * Each swatch previews the real surface colours and carries the ink colour that
+ * is actually legible on them. The previous version hardcoded near-white ink for
+ * every swatch, so "Light" and "Sepia" labels were invisible on their own
+ * light previews, and the dark/second stops did not match the shipped tokens -
+ * "Black" showed you the dark theme.
+ */
+const THEMES: {
+  id: AppSettings["theme"];
+  label: string;
+  paper: string;
+  plate: string;
+  ink: string;
+}[] = [
+  { id: "light", label: "Light", paper: "#fbfaf7", plate: "#ffffff", ink: "#1b1a17" },
+  { id: "sepia", label: "Sepia", paper: "#f5ecd8", plate: "#e8dfcc", ink: "#3b3125" },
+  { id: "dark", label: "Dark", paper: "#191c21", plate: "#212429", ink: "#e7e9ec" },
+  { id: "black", label: "Black", paper: "#000000", plate: "#191a1e", ink: "#cfd2d6" },
 ];
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -109,7 +122,6 @@ export function openSettingsSheet(
           settings.scrollMode = id === "scroll";
           persist();
         },
-        true,
       ),
     ),
   );
@@ -128,24 +140,29 @@ export function openSettingsSheet(
           closeSheet();
           openSettingsSheet(settings, onChange);
         },
-        true,
       ),
     ),
   );
 
   // ---- theme
-  body.appendChild(
+body.appendChild(
     field("Page theme", () => {
       const grid = el("div", "seg");
       for (const theme of THEMES) {
         const btn = el("button", "theme-swatch");
         btn.type = "button";
         if (settings.theme === theme.id) btn.classList.add("active");
-        btn.style.background = theme.preview[0];
-        btn.style.color = theme.preview[0] === "#ffffff" ? "#1b1a17" : "#e7e9ec";
+        // Two-tone preview: the reading page above, the app chrome below.
+        btn.style.background = `linear-gradient(160deg, ${theme.paper} 0 62%, ${theme.plate} 62% 100%)`;
+        btn.style.color = theme.ink;
         const label = el("span", undefined, theme.label);
         btn.appendChild(label);
         btn.addEventListener("click", () => {
+          // Choosing an explicit theme also means "stop following Windows".
+          if (settings.followSystemTheme) {
+            settings.followSystemTheme = false;
+            persist();
+          }
           settings.theme = theme.id;
           grid.querySelectorAll(".theme-swatch").forEach((n) => n.classList.remove("active"));
           btn.classList.add("active");
@@ -171,7 +188,6 @@ export function openSettingsSheet(
           settings.fontFamily = id as AppSettings["fontFamily"];
           persist();
         },
-        true,
       ),
     ),
   );
@@ -237,7 +253,6 @@ export function openSettingsSheet(
           settings.justify = id === "justify";
           persist();
         },
-        true,
       ),
     ),
   );
@@ -281,9 +296,8 @@ function segment(
   options: { id: string; label: string }[],
   active: string,
   onPick: (id: string) => void,
-  twoColumns = false,
 ) {
-  const grid = el("div", `seg${twoColumns ? " seg-cols-2" : ""}`);
+  const grid = el("div", "seg");
   for (const option of options) {
     const btn = el("button", "seg-btn", option.label);
     btn.type = "button";
@@ -298,15 +312,19 @@ function segment(
   return grid;
 }
 
+/**
+ * A range control. The live value lives in the field label above it, so this
+ * does not render a second readout - that is why every slider used to show its
+ * number twice.
+ */
 function slider(
   min: number,
   max: number,
   step: number,
   value: number,
   onInput: (value: number) => void,
-  format: (value: number) => string = (v) => `${v}px`,
+  _format: (value: number) => string = (v) => `${v}px`,
 ) {
-  const wrap = el("div");
   const input = document.createElement("input");
   input.type = "range";
   input.className = "slider";
@@ -314,13 +332,14 @@ function slider(
   input.max = String(max);
   input.step = String(step);
   input.value = String(value);
-  const readout = el("div", "field-value", format(value));
-  readout.style.textAlign = "right";
+  input.setAttribute("aria-valuetext", _format(value));
   input.addEventListener("input", () => {
     const next = Number(input.value);
-    readout.textContent = format(next);
+    input.setAttribute("aria-valuetext", _format(next));
+    // Keep the label readout in step with the thumb.
+    const label = input.closest(".field")?.querySelector(".field-value");
+    if (label) label.textContent = _format(next);
     onInput(next);
   });
-  wrap.append(input, readout);
-  return wrap;
+  return input;
 }

@@ -851,16 +851,26 @@ function cssEscape(value: string): string {
 }
 
 /**
- * Wrap the first occurrence of `needle` inside `root` with a `<mark>`.
+ * Highlight the first occurrence of `needle` inside `root`.
  *
- * Three things this has to get right, all of which were wrong before:
- *  - a selection usually crosses element boundaries, so the match routinely
- *    spans several text nodes. Splitting each node it crosses is the only way
- *    to highlight a phrase containing `<em>` or `<a>`.
- *  - the selection string has its whitespace collapsed but the DOM does not,
- *    so both sides have to be normalised or the offsets do not line up.
- *  - splitting must never lose text: every node is sliced into
- *    before/mark/after and all three pieces are re-inserted.
+ * The rule that makes this reliable: **never translate offsets between two
+ * differently-shaped strings.** The earlier version built a whitespace-collapsed
+ * string, found the match there, then sliced the *raw* text with those offsets.
+ * Whenever collapsing changed the length - and selecting from the middle of a
+ * word hit exactly that - the offsets landed in the wrong place and the
+ * highlight silently failed with "the text could not be located".
+ *
+ * So there are two passes:
+ *
+ *  1. Search each text node's own raw data. No translation at all. This is the
+ *     overwhelming majority of selections, including anything that starts or
+ *     ends mid-word, and it is exact.
+ *  2. Only if that fails, compare whitespace-collapsed text to catch a phrase
+ *     broken up by inline markup, and translate the ends back onto the raw
+ *     nodes with a character walk that accumulates collapsed lengths.
+ *
+ * In every case the text is reassembled as before + <mark> + after, so no
+ * character can be lost.
  */
 function wrapFirstOccurrence(
   root: HTMLElement,
@@ -868,85 +878,115 @@ function wrapFirstOccurrence(
   color: string,
   id: string,
 ): boolean {
-  const target = normaliseForMatch(needle);
-  if (target.length < 2) return false;
+  const raw = needle.trim();
+  if (!raw) return false;
+  const rawLower = raw.toLowerCase();
 
-  // Flatten to a string plus an index of where each node starts, joining with
-  // a single space so that adjacent nodes do not fuse into false matches.
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
-  const starts: number[] = [];
-  let probe = walker.nextNode() as Text | null;
-  let flat = "";
-  while (probe) {
-    if (probe.data.length) {
-      starts.push(flat.length);
-      nodes.push(probe);
-      flat += normaliseForMatch(probe.data);
-      // Sentinel: a boundary can never fall inside a run of spaces, so a match
-      // found here is guaranteed to be a real textual match, not a fusion.
-      flat += " ";
-    }
-    probe = walker.nextNode() as Text | null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode() as Text | null;
+  while (node) {
+    if (node.data.length) nodes.push(node);
+    node = walker.nextNode() as Text | null;
   }
   if (!nodes.length) return false;
 
-  const haystack = flat.toLowerCase();
-  const pos = haystack.indexOf(target.toLowerCase());
-  if (pos < 0) return false;
-  const end = pos + target.length;
+  // Pass 1 - the quote lives inside one text node.
+  for (const text of nodes) {
+    const at = text.data.toLowerCase().indexOf(rawLower);
+    if (at >= 0) return wrapRange(text, at, at + raw.length, color, id);
+  }
 
-  // Map [pos, end) back onto the nodes it covers. A node can contribute a
-  // prefix, the mark, and a suffix, in that order.
-  const owner = (offset: number): number => {
-    for (let i = nodes.length - 1; i >= 0; i -= 1) {
-      if (starts[i] <= offset) return i;
+  // Pass 2 - the quote is split across element boundaries.
+  const target = collapseWhitespace(raw);
+  let flat = "";
+  const flatStart: number[] = [];
+  for (let i = 0; i < nodes.length; i += 1) {
+    flatStart.push(flat.length);
+    flat += collapseWhitespace(nodes[i].data);
+    // A boundary can never fall inside a run of spaces, so a match here is a
+    // real textual match rather than two adjacent nodes fusing.
+    if (i + 1 < nodes.length) flat += " ";
+  }
+  const at = flat.toLowerCase().indexOf(target.toLowerCase());
+  if (at < 0) return false;
+  const end = at + target.length;
+
+  // Translate a flat (collapsed) offset to a node index plus a raw offset.
+  const locate = (offset: number): [number, number] => {
+    let index = nodes.length - 1;
+    while (index > 0 && flatStart[index] > offset) index -= 1;
+    const within = offset - flatStart[index];
+    let collapsed = 0;
+    let rawOffset = 0;
+    for (const ch of nodes[index].data) {
+      if (collapsed >= within) break;
+      collapsed += collapseWhitespace(ch).length;
+      rawOffset += ch.length;
     }
-    return 0;
+    return [index, rawOffset];
   };
-  const firstNode = owner(pos);
-  const lastNode = owner(end - 1);
-  if (starts[lastNode] + nodes[lastNode].data.length <= end - 1) return false;
 
-  // Walk backwards so mutating the DOM does not disturb the pending indices.
-  for (let i = lastNode; i >= firstNode; i -= 1) {
-    const text = nodes[i];
-    const nodeStart = starts[i];
-    const from = Math.max(0, pos - nodeStart);
-    const to = Math.min(text.data.length, end - nodeStart);
-    if (to <= from && !(i === firstNode && from === 0)) continue;
+  const [startIndex, startRaw] = locate(at);
+  const [endIndex, endRaw] = locate(end - 1);
+  // The walk lands on the character *after* the match end; step back one char
+  // so the mark stops at the right place.
+  let stopRaw = endRaw;
+  const endText = nodes[endIndex].data;
+  if (stopRaw > 0) stopRaw -= Array.from(endText.slice(0, endRaw)).pop()?.length ?? 0;
 
-    const before = text.data.slice(0, from);
-    const marked = text.data.slice(from, to);
-    const after = text.data.slice(to);
-    const parent = text.parentNode;
-    if (!parent) return false;
+  if (startIndex === endIndex) {
+    return wrapRange(nodes[startIndex], startRaw, stopRaw, color, id);
+  }
 
-    const pieces: Node[] = [];
-    if (before) pieces.push(document.createTextNode(before));
-    if (marked) {
-      const mark = document.createElement("mark");
-      mark.dataset.color = color;
-      mark.dataset.id = id;
-      mark.textContent = marked;
-      pieces.push(mark);
-    }
-    if (after) pieces.push(document.createTextNode(after));
-
-    parent.replaceChild(pieces[0], text);
-    let anchor: Node = pieces[0];
-    for (let k = 1; k < pieces.length; k += 1) {
-      parent.insertBefore(pieces[k], anchor.nextSibling);
-      anchor = pieces[k];
-    }
+  // Split across nodes: walk backwards so replacing a node does not disturb the
+  // pending indices of the ones still to come.
+  for (let i = endIndex; i >= startIndex; i -= 1) {
+    const from = i === startIndex ? startRaw : 0;
+    const to = i === endIndex ? stopRaw : nodes[i].data.length;
+    if (to <= from) continue;
+    wrapRange(nodes[i], from, to, color, id);
   }
   return true;
 }
 
-/** Collapse every run of whitespace to one space, the way the DOM shows text. */
-function normaliseForMatch(value: string): string {
+/**
+ * Replace `text` with `before + <mark>mid</mark> + after`. The three pieces
+ * always concatenate back to the original data, so text cannot be dropped.
+ */
+function wrapRange(
+  text: Text,
+  from: number,
+  to: number,
+  color: string,
+  id: string,
+): boolean {
+  const parent = text.parentNode;
+  if (!parent) return false;
+  const data = text.data;
+  const marked = data.slice(from, to);
+  if (!marked) return false;
+
+  const mark = document.createElement("mark");
+  mark.dataset.color = color;
+  mark.dataset.id = id;
+  mark.textContent = marked;
+
+  const fragment = document.createDocumentFragment();
+  const before = data.slice(0, from);
+  if (before) fragment.appendChild(document.createTextNode(before));
+  fragment.appendChild(mark);
+  const after = data.slice(to);
+  if (after) fragment.appendChild(document.createTextNode(after));
+
+  parent.replaceChild(fragment, text);
+  return true;
+}
+
+function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ");
 }
+
 export function parseLocator(raw: string): Locator | null {
   if (!raw) return null;
   try {
