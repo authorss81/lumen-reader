@@ -550,6 +550,10 @@ fn css_escape_does_not_bypass_the_scrubber() {
     // image-set() takes a bare URL and is not caught by the url() patterns.
     let set = r".d { background: image-set(https://evil.example/y.png 1x); }";
     assert!(!scrub_css(set).contains("evil.example"));
+    // Nor is a data: SVG, which is a document that can run script rather than
+    // a picture. Raster data URLs must still work, or every cover breaks.
+    let svg = r".e { background: url(data:image/svg+xml,%3Csvg%20onload=alert(1)%3E); }";
+    assert!(!scrub_css(svg).contains("svg+xml"), "data: SVG survived");
 }
 
 #[test]

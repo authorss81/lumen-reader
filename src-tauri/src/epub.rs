@@ -382,7 +382,14 @@ pub fn scrub_css(css: &str) -> String {
         *text = re
             .replace_all(text, |caps: &regex::Captures<'_>| {
                 let target = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                if target.to_ascii_lowercase().starts_with("data:image/") {
+                // Raster images and fonts only. `data:image/svg+xml` is a
+                // scripting-capable document, not a picture.
+                let lowered = target.to_ascii_lowercase();
+                let inline = lowered.starts_with("data:image/")
+                    && !lowered.starts_with("data:image/svg+xml")
+                    || lowered.starts_with("data:font/")
+                    || lowered.starts_with("data:application/font");
+                if inline {
                     format!("url({target})")
                 } else {
                     "none".to_string()
@@ -1668,9 +1675,17 @@ fn sanitize_html(html: &str) -> String {
     strip_foreign_xlink_href(&cleaned)
 }
 
-/// Does this `data:` URL carry an image or a font, and nothing else?
+/// Does this `data:` URL carry a raster image or a font, and nothing else?
+///
+/// SVG is deliberately excluded. `data:image/svg+xml,…` is a document, not a
+/// picture: it can carry `<script>` and `onload=`, and it executes when a
+/// browser navigates to it or embeds it as a document. Allowing it here would
+/// reintroduce exactly what the rest of the pipeline exists to prevent.
 fn is_inline_data_asset(value: &str) -> bool {
     let lowered = value.trim().to_ascii_lowercase();
+    if lowered.starts_with("data:image/svg+xml") {
+        return false;
+    }
     lowered.starts_with("data:image/")
         || lowered.starts_with("data:font/")
         || lowered.starts_with("data:application/font")
