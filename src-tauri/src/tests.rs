@@ -556,14 +556,23 @@ fn css_escape_does_not_bypass_the_scrubber() {
 fn css_escape_decoder_terminates_correctly() {
     // Exactly six hex digits, then one whitespace consumed as the terminator.
     assert_eq!(crate::epub::decode_css_escapes_for_test(r"\75 rl"), "url");
-    // Escaped backslash and quote survive so ordinary CSS is not mangled.
-    assert_eq!(crate::epub::decode_css_escapes_for_test(r"content: '\201C'"), "content: '\u{201C}'");
-    // A bare backslash is not an escape; it must keep its backslash.
-    assert_eq!(crate::epub::decode_css_escapes_for_test(r"a\b"), r"a\b");
-    // Line continuation is dropped, joining the declaration.
+    // A hex escape for a quote, and the whitespace terminator, both go.
+    assert_eq!(
+        crate::epub::decode_css_escapes_for_test(r"content: '\201C'"),
+        "content: '\u{201C}'"
+    );
+    // `\b` is a genuine escape for U+000B, not a literal backslash-b, so the
+    // decoder is right to produce it. `\z` is not an escape at all: there is no
+    // code point Z, so the backslash is kept and the letter passes through.
+    assert_eq!(crate::epub::decode_css_escapes_for_test(r"a\b"), "a\u{b}");
+    assert_eq!(crate::epub::decode_css_escapes_for_test(r"a\z"), r"a\z");
+    // A backslash before a whitespace is a line continuation and is dropped.
     assert_eq!(crate::epub::decode_css_escapes_for_test("a\\\nb"), "ab");
     // Plain text is returned untouched.
-    assert_eq!(crate::epub::decode_css_escapes_for_test(".a { color: red; }"), ".a { color: red; }");
+    assert_eq!(
+        crate::epub::decode_css_escapes_for_test(".a { color: red; }"),
+        ".a { color: red; }"
+    );
 }
 
 #[test]
@@ -582,21 +591,22 @@ fn svg_anchor_cannot_smuggle_a_data_url() {
     assert!(ok.contains("chap2.xhtml"), "svg link was dropped: {ok}");
 }
 
-/// Build a book whose container lists a decoy rootfile before the real one,
-/// plus a spine containing a non-linear item.
+/// Build a book whose container lists a rootfile that does not exist and one
+/// with the wrong media type before the real one, plus a spine containing a
+/// non-linear item.
 fn build_multi_rootfile() -> PathBuf {
     const CONTAINER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
-    <rootfile full-path="OEBPS/legacy/legacy.opf" media-type="application/oebps-package+xml"/>
-    <rootfile full-path="OEBPS/other.opf" media-type="application/x-dtbncx+xml"/>
-    <rootfile full-path="OEBPS/nope.opf" media-type="application/oebps-package+xml"/>
+    <rootfile full-path="OEBPS/absent.opf" media-type="application/oebps-package+xml"/>
+    <rootfile full-path="OEBPS/legacy.opf" media-type="application/x-dtbncx+xml"/>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
 </container>"#;
-    // The decoy first rootfile has a real OPF but no spine of its own, so
-    // resolving to it would yield a book with no readable content.
-    const DECOY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    // Present in the archive, but not a package document. A consumer that takes
+    // the first rootfile it finds, or that ignores the media type, lands here
+    // and finds a book with no readable chapters.
+    const LEGACY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="d">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="d">urn:uuid:decoy</dc:identifier><dc:title>Decoy</dc:title>
@@ -636,7 +646,7 @@ fn build_multi_rootfile() -> PathBuf {
         zip.write_all(body.as_bytes()).unwrap();
     };
     put(&mut zip, "META-INF/container.xml", CONTAINER);
-    put(&mut zip, "OEBPS/legacy/legacy.opf", DECOY);
+    put(&mut zip, "OEBPS/legacy.opf", LEGACY);
     put(&mut zip, "OEBPS/content.opf", CONTENT);
     put(&mut zip, "OEBPS/nav.xhtml", NAV);
     put(&mut zip, "OEBPS/toc.ncx", NCX);
@@ -668,8 +678,9 @@ fn reads_the_correct_rootfile_when_several_are_listed() {
     let mut epub = Epub::open(&path).expect("open");
     epub.ensure_manifest().expect("parse");
     let manifest = epub.manifest();
-    // The decoy "Decoy" OPF comes first in the container; picking it would
-    // produce an empty book.
+    // The container's first rootfile names a file that is not in the archive
+    // and its second is not a package document, so a consumer that stopped at
+    // the first entry would resolve to "Decoy", which has an empty spine.
     assert_eq!(manifest.title, "Multiple Rootfiles");
     assert_eq!(manifest.chapters.len(), 3);
 }

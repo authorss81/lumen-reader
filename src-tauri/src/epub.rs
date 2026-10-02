@@ -351,7 +351,7 @@ fn re_dangerous_css() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?is)(expression\s*\(|-moz-binding|behavior\s*:|@charset|javascript\s*:|vbscript\s*:|-webkit-image-set|-moz-image-set|image-set\s*\()",
+            r"(?is)(expression\s*\(|-moz-binding|behavior\s*:|@charset|javascript\s*:|vbscript\s*:)",
         )
         .unwrap()
     })
@@ -369,6 +369,13 @@ pub fn scrub_css(css: &str) -> String {
     out = re_css_comment().replace_all(&out, "").into_owned();
     out = re_at_import().replace_all(&out, "").into_owned();
     out = re_dangerous_css().replace_all(&out, "").into_owned();
+    // `image-set(url(…) 1x)` and its vendor-prefixed forms take a bare URL, so
+    // the url() passes below never see them. The whole call has to go, not just
+    // the function name: stripping only the name would leave the remote URL
+    // sitting in the declaration as bare text.
+    out = re_image_set()
+        .replace_all(&out, "none")
+        .into_owned();
     // The `regex` crate has no backreferences, so quoted and bare forms are
     // handled by three separate passes.
     let rewrite = |text: &mut String, re: &Regex| {
@@ -445,6 +452,16 @@ fn re_attr() -> &'static Regex {
             r#"(?is)\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))"#,
         )
         .unwrap()
+    })
+}
+/// Matches a whole `image-set( … )` call, arguments included. The argument list
+/// cannot contain a `;`, `{` or `}`, so the match cannot run past the
+/// declaration it belongs to.
+fn re_image_set() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?is)(?:-webkit-image-set|-moz-image-set|image-set)\s*\([^;{}]*\)")
+            .unwrap()
     })
 }
 
@@ -1637,6 +1654,23 @@ fn sanitize_html(html: &str) -> String {
             }
             if attribute.starts_with("on") || attribute.eq_ignore_ascii_case("srcdoc") {
                 return None;
+            }
+            // `xlink:href` is on the generic allow-list, so ammonia does not
+            // treat it as a URL attribute and never applies url_schemes to it.
+            // That left `<a xlink:href="data:text/html,…">` untouched, because
+            // data is an allowed scheme. Legitimate uses are rewritten to
+            // inline data: images before they get here, so admit nothing but
+            // an image or font payload.
+            if attribute.eq_ignore_ascii_case("xlink:href") {
+                let lowered = value.to_ascii_lowercase();
+                let inline = lowered.starts_with("data:image/")
+                    || lowered.starts_with("data:font/")
+                    || lowered.starts_with("data:application/font");
+                return if inline {
+                    Some(std::borrow::Cow::Borrowed(value))
+                } else {
+                    None
+                };
             }
             let _ = element;
             Some(std::borrow::Cow::Borrowed(value))
