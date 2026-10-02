@@ -721,10 +721,12 @@ select.select {
   height: auto;
   min-height: 100%;
 }
-.chrome-left.is-scrolling {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 180ms var(--ease);
+/* In scroll mode the page slider is meaningless and is already removed via the
+   `hidden` attribute in Reader.relayout(). The prev/next buttons must stay
+   visible and clickable - they are the only forward/back affordance once the
+   click zones are gone. Hiding the whole group removed both. */
+.chrome-left.is-scrolling .slider {
+  display: none;
 }
 .epub-doc {
   font-family: var(--reader-font);

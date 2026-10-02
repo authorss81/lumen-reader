@@ -581,7 +581,11 @@ function bindChrome() {
 
 function showSettings() {
   openSettingsSheet(settings, (next) => {
-    settings = next;
+    // Mutate in place. The Reader holds a reference to this exact object, so
+    // rebinding the variable here (`settings = next`) would leave the two
+    // pointing at different objects and every later change would be silently
+    // discarded by the reader.
+    Object.assign(settings, next);
     reader.applySettings();
   });
 }

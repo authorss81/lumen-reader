@@ -79,6 +79,23 @@ private annotations: Annotation[] = [];
     this.bindWheel();
     this.bindDragPaging();
     this.bindTextSelection();
+    this.bindScrollTracking();
+  }
+
+  /**
+   * Native scrolling fires no handler, so without this the percentage readout
+   * stayed frozen and `save_progress` was never called in scroll mode - which
+   * made scrolling look like it did nothing and lost your position on reopen.
+   */
+  private bindScrollTracking() {
+    this.viewport.addEventListener(
+      "scroll",
+      () => {
+        if (!this.settings.scrollMode) return;
+        this.paint();
+      },
+      { passive: true },
+    );
   }
 
   /* ------------------------------------------------- wheel and drag paging */
