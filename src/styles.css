@@ -19,77 +19,128 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
+/* ---------------------------------------------------------------------------
+   Theme tokens
+
+   Every text colour below was chosen to clear WCAG AA (4.5:1) against all three
+   surfaces it is used on - --bg, --bg-elev and --page-bg. The previous values
+   failed in all four themes: --fg-faint measured 2.44-3.77:1, and --fg-muted
+   failed in sepia. The danger colour is now a token rather than a hardcoded
+   light-mode red, which failed in three themes.
+
+   The dark themes deliberately step luminance *further* than the light ones:
+   the eye loses contrast at low luminance, so dark surfaces need bigger steps,
+   not smaller. In the old black theme --bg-sunken was #000000, identical to
+   --bg, which made inputs, code blocks, segment buttons and cover placeholders
+   render as the window itself.
+--------------------------------------------------------------------------- */
 html[data-theme="light"] {
   --bg: #f4f2ee;
   --bg-elev: #ffffff;
-  --bg-sunken: #e9e6e0;
+  --bg-sunken: #e7e4dd;
   --bg-hover: rgba(0, 0, 0, 0.055);
   --fg: #1b1a17;
-  --fg-muted: #6b6760;
-  --fg-faint: #98938a;
-  --border: rgba(0, 0, 0, 0.11);
-  --border-strong: rgba(0, 0, 0, 0.2);
-  --accent: #9a5b2c;
+  --fg-muted: #5c5852;
+  --fg-faint: #756e62;
+  --border: rgba(0, 0, 0, 0.13);
+  --border-strong: rgba(0, 0, 0, 0.24);
+  --control-edge: rgba(0, 0, 0, 0.2);
+  --accent: #8a4f22;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(154, 91, 44, 0.12);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 26px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.18);
+  --accent-soft: rgba(138, 79, 34, 0.12);
+  --danger: #b3261e;
+  --ok: #2f7d4f;
   --page-bg: #fbfaf7;
   --page-fg: #211f1c;
+  --chrome-bg: #ffffff;
+  --mark-yellow: rgba(240, 200, 60, 0.42);
+  --mark-green: rgba(110, 200, 120, 0.38);
+  --mark-blue: rgba(110, 170, 230, 0.36);
+  --mark-pink: rgba(230, 130, 170, 0.34);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 26px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.07), 0 16px 40px rgba(0, 0, 0, 0.16);
 }
 html[data-theme="sepia"] {
   --bg: #e8dfcc;
   --bg-elev: #f4ecd8;
-  --bg-sunken: #ded3bb;
+  --bg-sunken: #dbcfb4;
   --bg-hover: rgba(90, 66, 30, 0.09);
   --fg: #3b3125;
-  --fg-muted: #7a6a52;
-  --fg-faint: #9d8d74;
-  --border: rgba(80, 58, 26, 0.16);
-  --border-strong: rgba(80, 58, 26, 0.3);
-  --accent: #8a5a2b;
+  --fg-muted: #5d5241;
+  --fg-faint: #76603d;
+  --border: rgba(80, 58, 26, 0.19);
+  --border-strong: rgba(80, 58, 26, 0.34);
+  --control-edge: rgba(80, 58, 26, 0.3);
+  --accent: #74461c;
   --accent-fg: #fff8ec;
-  --accent-soft: rgba(138, 90, 43, 0.14);
-  --shadow: 0 1px 2px rgba(60, 42, 18, 0.08), 0 8px 24px rgba(60, 42, 18, 0.12);
-  --shadow-lg: 0 12px 44px rgba(60, 42, 18, 0.24);
+  --accent-soft: rgba(116, 70, 28, 0.14);
+  --danger: #a8341f;
+  --ok: #3f6b32;
   --page-bg: #f5ecd8;
   --page-fg: #3a3126;
+  --chrome-bg: #eadfc6;
+  --mark-yellow: rgba(226, 184, 48, 0.4);
+  --mark-green: rgba(120, 176, 96, 0.36);
+  --mark-blue: rgba(104, 150, 196, 0.34);
+  --mark-pink: rgba(196, 118, 150, 0.32);
+  --shadow: 0 1px 2px rgba(60, 42, 18, 0.08), 0 8px 24px rgba(60, 42, 18, 0.12);
+  --shadow-md: 0 1px 2px rgba(60, 42, 18, 0.1), 0 8px 24px rgba(60, 42, 18, 0.16);
+  --shadow-lg: 0 2px 8px rgba(60, 42, 18, 0.14), 0 18px 44px rgba(60, 42, 18, 0.26);
 }
 html[data-theme="dark"] {
-  --bg: #16181c;
-  --bg-elev: #1e2126;
-  --bg-sunken: #101216;
+  --bg: #14161a;
+  --bg-elev: #212429;
+  --bg-sunken: #0b0d10;
   --bg-hover: rgba(255, 255, 255, 0.07);
   --fg: #e7e9ec;
-  --fg-muted: #9aa1ab;
-  --fg-faint: #6d747e;
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.2);
-  --accent: #c98552;
+  --fg-muted: #a3aab4;
+  --fg-faint: #858b93;
+  --border: rgba(255, 255, 255, 0.13);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  --control-edge: rgba(255, 255, 255, 0.2);
+  --accent: #d5945f;
   --accent-fg: #1b1409;
-  --accent-soft: rgba(201, 133, 82, 0.16);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 56px rgba(0, 0, 0, 0.6);
-  --page-bg: #1a1c20;
+  --accent-soft: rgba(213, 148, 95, 0.14);
+  --danger: #ff9086;
+  --ok: #7fd39f;
+  --page-bg: #191c21;
   --page-fg: #d8dade;
+  --chrome-bg: #212429;
+  --mark-yellow: rgba(224, 176, 40, 0.34);
+  --mark-green: rgba(110, 200, 120, 0.3);
+  --mark-blue: rgba(110, 170, 230, 0.32);
+  --mark-pink: rgba(230, 130, 170, 0.3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 30px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.5), 0 18px 48px rgba(0, 0, 0, 0.6);
 }
 html[data-theme="black"] {
   --bg: #000000;
-  --bg-elev: #0c0d0f;
-  --bg-sunken: #000000;
+  --bg-elev: #191a1e;
+  --bg-sunken: #0c0c0e;
   --bg-hover: rgba(255, 255, 255, 0.08);
   --fg: #cfd2d6;
-  --fg-muted: #82878e;
-  --fg-faint: #565b62;
-  --border: rgba(255, 255, 255, 0.11);
-  --border-strong: rgba(255, 255, 255, 0.22);
-  --accent: #d0955f;
+  --fg-muted: #8f959d;
+  --fg-faint: #7f8288;
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --control-edge: rgba(255, 255, 255, 0.24);
+  --accent: #dda069;
   --accent-fg: #17120b;
-  --accent-soft: rgba(208, 149, 95, 0.18);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 10px 30px rgba(0, 0, 0, 0.7);
-  --shadow-lg: 0 16px 56px rgba(0, 0, 0, 0.85);
+  --accent-soft: rgba(221, 160, 105, 0.14);
+  --danger: #ff9086;
+  --ok: #7fd39f;
   --page-bg: #000000;
   --page-fg: #c9ccd0;
+  --chrome-bg: #141417;
+  --mark-yellow: rgba(224, 176, 40, 0.34);
+  --mark-green: rgba(110, 200, 120, 0.3);
+  --mark-blue: rgba(110, 170, 230, 0.32);
+  --mark-pink: rgba(230, 130, 170, 0.3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 10px 30px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.7), 0 10px 30px rgba(0, 0, 0, 0.8);
+  --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.8), 0 18px 48px rgba(0, 0, 0, 0.9);
 }
 
 /* =========================================================================
@@ -128,11 +179,10 @@ textarea {
   color: inherit;
 }
 h1,
-h2,
-h3 {
+ h2,
+ h3 {
   margin: 0;
-  font-weight: 620;
-  letter-spacing: -0.011em;
+  font-weight: 600;
 }
 svg {
   width: 20px;
@@ -152,6 +202,48 @@ code {
 }
 ::selection {
   background: var(--accent-soft);
+}
+
+/* ---------------------------------------------------------------------------
+   Focus
+
+   There was almost no visible focus state: three rules existed, and `.input`
+   set `outline: none`. Keyboard users got the UA's system-blue ring on a warm
+   brown palette, or nothing at all. The accent clears AA against --bg in all
+   four themes (5.83 / 6.02 / 7.10 / 9.31:1).
+--------------------------------------------------------------------------- */
+:where(
+  .btn,
+  .icon-btn,
+  .tab,
+  .seg-btn,
+  .theme-swatch,
+  .toc-item,
+  .result,
+  .swatch,
+  .card-menu .icon-btn,
+  .list-row-actions .icon-btn,
+  .modal-box button,
+  .context-menu button
+):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.input:focus-visible,
+.note-input:focus-visible,
+.note-text:focus-visible,
+.slider:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.swatch:focus-visible {
+  outline-offset: 3px;
+}
+.card:focus-visible .card-cover {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* scrollbars */
@@ -192,7 +284,7 @@ code {
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   color: var(--fg);
-  font-weight: 520;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.14s var(--ease), border-color 0.14s var(--ease),
@@ -227,7 +319,7 @@ code {
   background: var(--bg-hover);
 }
 .btn-danger {
-  color: #d1483a;
+  color: var(--danger);
 }
 .btn-sm {
   padding: 5px 10px;
@@ -259,7 +351,7 @@ code {
 
 .input {
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   color: var(--fg);
@@ -376,14 +468,14 @@ select.select {
 }
 .brand h1 {
   font-size: 26px;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.018em;
 }
 .brand-sub {
   margin: 2px 0 0;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.08em;
 }
 .library-tools {
   display: flex;
@@ -398,9 +490,18 @@ select.select {
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
-  gap: 22px 18px;
+  gap: 24px 20px;
+  max-width: 1320px;
+  margin-inline: auto;
 }
 
+/* Cheapest "someone designed this" signal available. */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
 .card {
   display: flex;
   flex-direction: column;
@@ -408,6 +509,8 @@ select.select {
   cursor: pointer;
   border-radius: var(--radius);
   outline: none;
+  animation: card-in 260ms var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 18ms);
 }
 .card-cover {
   position: relative;
@@ -415,7 +518,7 @@ select.select {
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--bg-sunken);
-  box-shadow: var(--shadow);
+  box-shadow: inset 0 0 0 1px var(--border), var(--shadow-md);
   transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease);
   display: flex;
   align-items: center;
@@ -423,7 +526,7 @@ select.select {
 }
 .card:hover .card-cover {
   transform: translateY(-3px);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
 }
 .card:focus-visible .card-cover {
   outline: 2px solid var(--accent);
@@ -432,8 +535,15 @@ select.select {
 .card-cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* `cover` destroyed landscape and square covers, usually taking the title
+     with it. The 2:3 majority fills the box identically under `contain`, so
+     nothing changes for most books and nothing is lost for the rest. */
+  object-fit: contain;
   display: block;
+  transition: opacity 170ms var(--ease);
+}
+.card-cover img[data-loaded] {
+  opacity: 1;
 }
 .card-cover .fallback {
   padding: 14px;
@@ -447,15 +557,17 @@ select.select {
   -webkit-box-orient: vertical;
   overflow: hidden;
   width: 100%;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 .card-progress {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
   height: 3px;
-  background: rgba(0, 0, 0, 0.25);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 .card-progress span {
   display: block;
@@ -466,9 +578,12 @@ select.select {
   min-width: 0;
 }
 .card-title {
-  font-size: 13.5px;
-  font-weight: 570;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1.3;
+  /* Two lines of space whether or not the title wraps, so author baselines
+     line up across a row. */
+  min-height: 36px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -487,28 +602,54 @@ select.select {
   top: 6px;
   right: 6px;
   opacity: 0;
+  /* Without this the button was an invisible 28px hit target on every cover
+     that opened the menu instead of the book. */
+  pointer-events: none;
   transition: opacity 0.14s var(--ease);
 }
 .card:hover .card-menu,
 .card:focus-within .card-menu {
   opacity: 1;
+  pointer-events: auto;
 }
 .card-menu .icon-btn {
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--border);
+  color: var(--fg);
   width: 28px;
   height: 28px;
   backdrop-filter: blur(4px);
 }
 .card-menu .icon-btn:hover {
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: var(--fg);
 }
 .card-menu svg {
   width: 16px;
   height: 16px;
 }
 
+/* The "no books match" note used to be appended into the grid itself, so it
+   rendered as a 158px-wide column of grey confetti. */
+.grid-empty {
+  grid-column: 1 / -1;
+  max-width: 34ch;
+  margin: 56px auto;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.grid-empty::before {
+  content: "";
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 0 auto 10px;
+  background: currentColor;
+  opacity: 0.4;
+  -webkit-mask: center / contain no-repeat url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'><circle cx='11' cy='11' r='6'/><path d='M20 20l-4.5-4.5'/></svg>");
+  mask: center / contain no-repeat url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'><circle cx='11' cy='11' r='6'/><path d='M20 20l-4.5-4.5'/></svg>");
+}
 .empty {
   display: flex;
   flex-direction: column;
@@ -592,7 +733,7 @@ select.select {
   letter-spacing: var(--reader-tracking, 0em);
   text-align: var(--reader-align, left);
   hyphens: auto;
-  word-break: break-word;
+  overflow-wrap: break-word;
   orphans: 2;
   widows: 2;
 }
@@ -610,7 +751,7 @@ select.select {
 .epub-doc h6 {
   line-height: 1.22;
   margin: 1.5em 0 0.55em;
-  font-weight: 640;
+  font-weight: 600;
   text-align: left;
   break-after: avoid;
 }
@@ -654,7 +795,7 @@ select.select {
 }
 .epub-doc pre {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   font-family: var(--font-mono);
   font-size: 0.85em;
   background: var(--bg-sunken);
@@ -706,25 +847,22 @@ select.select {
 }
 .epub-doc mark,
 .epub-doc .hl {
-  background: rgba(240, 200, 60, 0.42);
+  background: var(--mark-yellow);
   border-radius: 2px;
   padding: 0.05em 0;
   box-shadow: 0 0 0 1px rgba(160, 120, 0, 0.25);
 }
-html[data-theme="dark"] .epub-doc mark,
-html[data-theme="dark"] .epub-doc .hl,
-html[data-theme="black"] .epub-doc mark,
-html[data-theme="black"] .epub-doc .hl {
-  background: rgba(224, 176, 40, 0.3);
-}
+/* All four colours are now per-theme tokens. Only yellow had a dark variant
+   before, so green/blue/pink composited to olive, slate and mauve on a dark
+   page instead of reading as highlights. */
 .epub-doc mark[data-color="green"] {
-  background: rgba(110, 200, 120, 0.38);
+  background: var(--mark-green);
 }
 .epub-doc mark[data-color="blue"] {
-  background: rgba(110, 170, 230, 0.36);
+  background: var(--mark-blue);
 }
 .epub-doc mark[data-color="pink"] {
-  background: rgba(230, 130, 170, 0.34);
+  background: var(--mark-pink);
 }
 .epub-doc .chapter-break {
   position: absolute;
@@ -742,7 +880,7 @@ html[data-theme="black"] .epub-doc .hl {
   text-align: center;
   font-family: var(--font-ui);
   font-size: 12px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-faint);
   padding: 1.6em 0 0.9em;
@@ -783,9 +921,10 @@ html[data-theme="black"] .epub-doc .hl {
   align-items: center;
   gap: 14px;
   padding: 0 14px;
-  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
-  backdrop-filter: blur(14px);
-  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--chrome-bg) 90%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  border-top: 1px solid var(--border-strong);
+  box-shadow: 0 -12px 26px -14px rgba(0, 0, 0, 0.34);
   transform: translateY(100%);
   transition: transform 0.2s var(--ease);
   z-index: 8;
@@ -820,7 +959,7 @@ html[data-theme="black"] .epub-doc .hl {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.42);
+  background: color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.5));
   /* MUST sit below the drawer it dims. At 38 it painted over the settings
      sheet (29) and swallowed every click inside it. Stacking order is:
      reader 0-8 < scrim 20 < drawer 29 < topbar 30 < toast/menu 90+. */
@@ -843,7 +982,7 @@ html[data-theme="black"] .epub-doc .hl {
   max-width: 92vw;
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   z-index: 29;
   display: flex;
   flex-direction: column;
@@ -877,7 +1016,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  font-weight: 540;
+  font-weight: 500;
   font-size: 13px;
 }
 .tab:hover {
@@ -915,7 +1054,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: transparent;
   color: var(--fg);
   cursor: pointer;
-  font-size: 13.2px;
+  font-size: 13px;
   line-height: 1.35;
   transition: background 0.12s var(--ease);
 }
@@ -925,7 +1064,7 @@ html[data-theme="black"] .epub-doc .hl {
 .toc-item.active {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 570;
+  font-weight: 600;
 }
 .toc-item .toc-meta {
   display: block;
@@ -952,7 +1091,7 @@ html[data-theme="black"] .epub-doc .hl {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--fg-faint);
   margin-bottom: 4px;
 }
@@ -966,7 +1105,7 @@ html[data-theme="black"] .epub-doc .hl {
   color: var(--accent);
   border-radius: 3px;
   padding: 0 2px;
-  font-weight: 560;
+  font-weight: 600;
 }
 
 .list-row {
@@ -986,10 +1125,10 @@ html[data-theme="black"] .epub-doc .hl {
 }
 .list-row-title {
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 500;
 }
 .list-row-sub {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--fg-faint);
   margin-top: 2px;
 }
@@ -1020,7 +1159,7 @@ html[data-theme="black"] .epub-doc .hl {
 .quote {
   border-left: 3px solid var(--accent);
   padding-left: 9px;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--fg-muted);
   margin: 5px 0;
@@ -1028,11 +1167,11 @@ html[data-theme="black"] .epub-doc .hl {
 .note-input,
 .note-text {
   width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   padding: 7px 9px;
-  font-size: 12.5px;
+  font-size: 12px;
   resize: vertical;
   outline: none;
 }
@@ -1088,7 +1227,7 @@ html[data-theme="black"] .epub-doc .hl {
   max-width: 92vw;
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   z-index: 29;
   display: flex;
   flex-direction: column;
@@ -1107,9 +1246,9 @@ html[data-theme="black"] .epub-doc .hl {
   justify-content: space-between;
   align-items: baseline;
   font-size: 12px;
-  font-weight: 580;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.08em;
   color: var(--fg-muted);
   margin-bottom: 7px;
 }
@@ -1130,13 +1269,14 @@ html[data-theme="black"] .epub-doc .hl {
 }
 .seg-btn {
   padding: 9px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: center;
-  transition: all 0.13s var(--ease);
+  transition: background-color 110ms var(--ease), border-color 110ms var(--ease),
+    color 110ms var(--ease);
 }
 .seg-btn:hover {
   border-color: var(--border-strong);
@@ -1145,7 +1285,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
-  font-weight: 560;
+  font-weight: 600;
 }
 .theme-swatch {
   width: 100%;
@@ -1182,7 +1322,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 999px;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   animation: toast-in 0.14s var(--ease);
 }
 .selection-pop .swatch {
@@ -1201,7 +1341,7 @@ html[data-theme="black"] .epub-doc .hl {
   z-index: 90;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   border-radius: 999px;
   padding: 9px 18px;
   font-size: 13px;
@@ -1259,7 +1399,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   width: min(420px, 100%);
   padding: 20px;
   animation: toast-in 0.18s var(--ease);
@@ -1285,7 +1425,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   padding: 5px;
   min-width: 178px;
 }
@@ -1306,7 +1446,7 @@ html[data-theme="black"] .epub-doc .hl {
   background: var(--bg-hover);
 }
 .context-menu button.danger {
-  color: #d1483a;
+  color: var(--danger);
 }
 .context-menu svg {
   width: 16px;

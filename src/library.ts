@@ -92,15 +92,21 @@ forget(bookId: string) {
     this.grid.replaceChildren();
     this.empty.hidden = this.books.length > 0;
 
-    const noMatch = this.books.length > 0 && list.length === 0;
+const noMatch = this.books.length > 0 && list.length === 0;
     if (noMatch) {
-      const note = el("p", "panel-empty", "No books match that filter.");
-      this.grid.appendChild(note);
+      this.grid.appendChild(
+        el("p", "grid-empty", `No books match “${this.filter}”.`),
+      );
       return;
     }
 
     const frag = document.createDocumentFragment();
-    for (const book of list) frag.appendChild(this.card(book));
+    list.forEach((book, index) => {
+      const card = this.card(book);
+      // Caps the entrance stagger at 10 so late cards do not wait 900ms.
+      card.style.setProperty("--i", String(Math.min(index, 10)));
+      frag.appendChild(card);
+    });
     this.grid.appendChild(frag);
   }
 
@@ -112,8 +118,8 @@ forget(bookId: string) {
 
     const cover = el("div", "card-cover");
     cover.dataset.id = book.id;
-    const cached = coverCache.get(book.id);
-    if (cached) {
+const cached = coverCache.get(book.id);
+    if (cached !== undefined) {
       if (cached) this.paintCover(cover, cached);
       else this.paintFallback(cover, book);
     } else {
@@ -170,13 +176,22 @@ forget(bookId: string) {
     return card;
   }
 
-  private paintCover(host: HTMLElement, dataUrl: string) {
+private paintCover(host: HTMLElement, dataUrl: string) {
     host.replaceChildren();
     const img = document.createElement("img");
     img.loading = "lazy";
     img.decoding = "async";
     img.alt = "";
     img.src = dataUrl;
+    // Fade in once decoded, so the shelf does not strobe as 20 covers resolve.
+    img.addEventListener(
+      "load",
+      () => {
+        img.dataset.loaded = "1";
+      },
+      { once: true },
+    );
+    if (img.complete) img.dataset.loaded = "1";
     const bar = host.querySelector(".card-progress");
     host.appendChild(img);
     if (bar) host.appendChild(bar);

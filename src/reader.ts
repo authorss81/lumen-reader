@@ -186,35 +186,43 @@ private annotations: Annotation[] = [];
 
   /* ------------------------------------------------------------ geometry */
 
-  private metrics() {
+private metrics() {
     const s = this.settings;
-    const width = Math.max(240, this.viewport.clientWidth - s.marginX * 2);
+    const available = Math.max(240, this.viewport.clientWidth - s.marginX * 2);
+    // Cap the measure. Without this, a wide monitor gave a column of roughly
+    // 190 characters, which is unreadable. About 68 characters per line is the
+    // comfortable range, so the column is capped at ~34em and centred.
+    const cap = Math.round(s.fontSize * 34);
+    const width = Math.min(available, cap);
     const height = Math.max(200, this.viewport.clientHeight - s.marginY * 2);
-    return { width, height, gap: GAP };
+    // Extra space either side once the cap kicks in, so the page stays centred.
+    const slack = Math.max(0, available - width);
+    return { width, height, gap: GAP, slack };
   }
 
 private relayout() {
     if (!this.book) return;
-    const { width, height } = this.metrics();
+    const { width, height, slack } = this.metrics();
     const style = this.content.style;
     const scrolling = this.settings.scrollMode;
+    const inset = this.settings.marginX + slack / 2;
 
     this.viewport.classList.toggle("is-scrolling", scrolling);
     this.slider.hidden = scrolling;
     this.slider.parentElement?.classList.toggle("is-scrolling", scrolling);
     style.top = `${this.settings.marginY}px`;
-    style.left = `${this.settings.marginX}px`;
+    style.left = `${inset}px`;
 
     if (scrolling) {
       // Continuous vertical reading: no columns, natural document flow, and the
       // viewport does the scrolling. `.epub-content` is `position: relative`
       // here, so the offsets are zeroed and the margins are expressed as
-      // padding instead. With `box-sizing: border-box` the width is the full
-      // viewport and the padding creates the gutters.
+      // padding instead. With `box-sizing: border-box` the width is the capped
+      // measure plus the gutter, and the padding creates the margins.
       style.top = "0px";
-      style.left = "0px";
+      style.left = `${slack / 2}px`;
       style.height = "";
-      style.width = `${this.viewport.clientWidth}px`;
+      style.width = `${width + this.settings.marginX * 2}px`;
       style.columnWidth = "";
       style.columnGap = "";
       style.transform = "";
